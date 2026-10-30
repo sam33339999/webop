@@ -60,9 +60,9 @@ type Point = { x: number; y: number };
 
 async function refPoint(tabId: number, ref: unknown): Promise<[number, number]> {
   if (typeof ref !== "string" || ref === "") invalid("ref must be a non-empty string.");
-  const r = await askContent<Point | { error: "stale_ref" } | undefined>(tabId, { type: "webop:ref_point", ref });
+  const r = await askContent<Point | { error: "stale_ref"; message?: string } | undefined>(tabId, { type: "webop:ref_point", ref });
   if (!r) throw new CdpError("internal", "Page content script returned no reply.");
-  if ("error" in r) throw new CdpError("stale_ref", `${ref} no longer exists; call read_page again to get fresh refs.`);
+  if ("error" in r) throw new CdpError("stale_ref", `${ref}: ${r.message ?? "no longer exists"}; call read_page again to get fresh refs.`);
   return [r.x, r.y];
 }
 
@@ -133,9 +133,13 @@ async function run(call: ToolCall): Promise<Outcome> {
     if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
     if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");
     if (max_chars !== undefined && (typeof max_chars !== "number" || !Number.isFinite(max_chars) || max_chars <= 0)) invalid("max_chars must be a positive number.");
-    const r = await askContent<{ text: string } | { error: "stale_ref" } | undefined>(tabId, { type: "webop:read_page", filter, ref_id, max_chars: max_chars ?? 50000 });
+    const key = `webop.refBase.${tabId}`;
+    const stored = (await chrome.storage.session.get(key))[key];
+    const ref_base = typeof stored === "number" ? stored : 0;
+    const r = await askContent<{ text: string; counter: number } | { error: "stale_ref" } | undefined>(tabId, { type: "webop:read_page", filter, ref_id, max_chars: max_chars ?? 50000, ref_base });
     if (!r) throw new CdpError("internal", "Page content script returned no reply.");
     if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
+    await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
     return { content: [{ type: "text", text: r.text }] };
   }
   invalid(`Unknown tool: ${String(call.tool)}`);

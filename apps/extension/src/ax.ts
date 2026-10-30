@@ -1,6 +1,6 @@
 // Accessibility-tree content script: builds a text AX tree and hands out stable `ref_N` handles for elements.
 type AxMessage =
-  | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number }
+  | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number; ref_base?: number }
   | { type: "webop:ref_point"; ref: string };
 
 const MAX_DEPTH = 15;
@@ -164,8 +164,13 @@ function attrsOf(el: Element, role: string): string {
     else if (t.value) parts.push(`value=${quote(clip(t.value))}`);
   } else if (tag === "option") {
     const o = el as HTMLOptionElement;
-    parts.push(`value=${quote(isSensitive(el) ? "[value redacted]" : clip(o.value))}`);
-    if (o.selected) parts.push("(selected)");
+    // Sensitivity lives on the owning <select> (autocomplete), so options inherit it.
+    const owner = o.closest("select");
+    if (owner && isSensitive(owner)) parts.push(`value=${quote("[value redacted]")}`);
+    else {
+      parts.push(`value=${quote(clip(o.value))}`);
+      if (o.selected) parts.push("(selected)");
+    }
   }
   if ((el as HTMLButtonElement).disabled) parts.push("(disabled)");
   return parts.join(" ");
@@ -221,8 +226,10 @@ function truncate(text: string, max: number): string {
   return `${head}\n[truncated: output exceeded max_chars=${max}]`;
 }
 
-function readPage(msg: Extract<AxMessage, { type: "webop:read_page" }>): { text: string } | { error: "stale_ref" } {
+function readPage(msg: Extract<AxMessage, { type: "webop:read_page" }>): { text: string; counter: number } | { error: "stale_ref" } {
   pruneStaleRefs();
+  // The service worker remembers the highest number issued in this tab, so numbers never repeat across reloads.
+  if (typeof msg.ref_base === "number") counter = Math.max(counter, msg.ref_base);
   const w: Walk = { lines: [], nodes: 0, interactiveOnly: msg.filter === "interactive" };
   let root: Element | null = document.body ?? document.documentElement;
   if (msg.ref_id !== undefined) {
@@ -232,16 +239,23 @@ function readPage(msg: Extract<AxMessage, { type: "webop:read_page" }>): { text:
   if (root) walk(root, 0, w);
   const max = typeof msg.max_chars === "number" && msg.max_chars > 0 ? msg.max_chars : DEFAULT_MAX_CHARS;
   const text = w.lines.join("\n");
-  return { text: truncate(text === "" ? "(empty page)" : text, max) };
+  return { text: truncate(text === "" ? "(empty page)" : text, max), counter };
 }
 
-function refPoint(ref: string): { x: number; y: number } | { error: "stale_ref" } {
+function refPoint(ref: string): { x: number; y: number } | { error: "stale_ref"; message?: string } {
   const el = lookup(ref);
   if (!el) return { error: "stale_ref" };
   el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
   const r = el.getBoundingClientRect();
+  if (!isVisible(el) || r.width === 0 || r.height === 0) {
+    return { error: "stale_ref", message: "target is not visible or has no layout box" };
+  }
   const x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
   const y = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || !(hit === el || el.contains(hit))) {
+    return { error: "stale_ref", message: "target is covered or not hit-testable" };
+  }
   return { x, y };
 }
 

@@ -126,3 +126,50 @@ test("ref and coordinate both -> invalid_args", async () => {
   assert.ok("error" in r2);
   assert.equal(r2.error.code, "invalid_args");
 });
+
+test("old ref after reload never hits the new element", async () => {
+  const { h, tab_id, page } = await setup();
+  const oldRef = refOf(await readText(h, { tab_id }), /button "Submit" \[(ref_\d+)\]/);
+  await page.reload();
+  const text = await readText(h, { tab_id });
+  const newRef = refOf(text, /button "Submit" \[(ref_\d+)\]/);
+  assert.notEqual(newRef, oldRef);
+  for (const m of text.matchAll(/\[(ref_\d+)\]/g)) assert.notEqual(m[1], oldRef);
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, ref: oldRef });
+  assert.ok("error" in r);
+  assert.equal(r.error.code, "stale_ref");
+  assert.equal(await page.title(), "ax");
+});
+
+test("element hidden after read -> stale_ref", async () => {
+  const { h, tab_id, page } = await setup();
+  const ref = refOf(await readText(h, { tab_id }), /button "Hideable" \[(ref_\d+)\]/);
+  await page.evaluate(() => { document.getElementById("hide")!.style.display = "none"; });
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, ref });
+  assert.ok("error" in r);
+  assert.equal(r.error.code, "stale_ref");
+  assert.equal(await page.title(), "ax");
+});
+
+test("covered element -> stale_ref and overlay not clicked", async () => {
+  const { h, tab_id, page } = await setup();
+  const ref = refOf(await readText(h, { tab_id }), /button "Covered" \[(ref_\d+)\]/);
+  await page.evaluate(() => { document.getElementById("shield")!.style.display = "block"; });
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, ref });
+  assert.ok("error" in r);
+  assert.equal(r.error.code, "stale_ref");
+  assert.match(r.error.message, /covered/);
+  assert.equal(await page.title(), "ax");
+});
+
+test("cc-* select options are redacted", async () => {
+  const { h, tab_id } = await setup();
+  const text = await readText(h, { tab_id });
+  const lines = text.split("\n").filter((l) => l.includes('option "0'));
+  assert.equal(lines.length, 2);
+  for (const l of lines) {
+    assert.ok(l.includes("[value redacted]"), l);
+    assert.ok(!l.includes("(selected)"), l);
+    assert.ok(!l.includes('value="07"') && !l.includes('value="01"'), l);
+  }
+});

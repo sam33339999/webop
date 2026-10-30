@@ -11,10 +11,17 @@
 <label>Secret <input id="pw" type="password" value="hunter2"></label>
 <input id="name" type="text" placeholder="Your name">
 <select id="sel" aria-label="Color"><option value="r">Red</option><option value="g" selected>Green</option></select>
+<select id="cc" autocomplete="cc-exp-month" aria-label="Month"><option value="01">01</option><option value="07" selected>07</option></select>
+<button id="hide">Hideable</button>
+<button id="cover">Covered</button>
+<div id="shield" style="display:none;position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.01)"></div>
 <div id="spacer"></div>
 <button id="far">Far away</button>
 <div id="tail"></div>
 <script>
+  document.getElementById("hide").addEventListener("click", () => { document.title = "hide:clicked"; });
+  document.getElementById("cover").addEventListener("click", () => { document.title = "cover:clicked"; });
+  document.getElementById("shield").addEventListener("click", () => { document.title = "shield:clicked"; });
   document.getElementById("submit").addEventListener("click", (e) => { document.title = "clicked:" + e.isTrusted; });
   document.getElementById("far").addEventListener("click", (e) => { document.title = "far:" + e.isTrusted; });
 </script>
