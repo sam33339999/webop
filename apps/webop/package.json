@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@webop/core": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@webop/core": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
