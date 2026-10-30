@@ -2,7 +2,9 @@
 type OverlayMessage =
   | { type: "webop:cursor"; x: number; y: number }
   | { type: "webop:overlay"; hidden: boolean }
-  | { type: "webop:glow"; on: boolean; color: string };
+  | { type: "webop:glow"; on: boolean; color: string }
+  | { type: "webop:session_end" }
+  | { type: "webop:overlay_state" };
 
 const host = document.createElement("div");
 host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483646;";
@@ -26,11 +28,16 @@ chrome.runtime.onMessage.addListener((msg: OverlayMessage, _sender, sendResponse
   } else if (msg.type === "webop:glow") {
     glow.style.boxShadow = msg.on ? `inset 0 0 40px 6px ${msg.color}` : "none";
     glow.style.opacity = msg.on ? "1" : "0";
+  } else if (msg.type === "webop:session_end") {
+    cursor.style.opacity = "0";
+    glow.style.boxShadow = "none";
+    glow.style.opacity = "0";
   } else if (msg.type === "webop:overlay") {
     host.style.display = msg.hidden ? "none" : "";
-    // Reply after the next frame so the hide has been painted before a screenshot is taken.
-    requestAnimationFrame(() => requestAnimationFrame(() => sendResponse({ ok: true })));
-    return true;
+    // Reply right away: background tabs (what agents drive) never run requestAnimationFrame, so waiting for a frame would only time out.
+    sendResponse({ ok: true });
+  } else if (__DEV__ && msg.type === "webop:overlay_state") {
+    sendResponse({ cursorOpacity: cursor.style.opacity, glowOpacity: glow.style.opacity, hidden: host.style.display === "none" });
   }
   return false;
 });

@@ -5,13 +5,15 @@ import { adoptTab, closeSession } from "./sessions.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
+/** Dev-only: how often the hider gave up waiting for the content script's reply. */
+const hiderStats = { timeouts: 0 };
 
 // Hide the phantom overlay while capturing; a missing or slow content script must never fail the action.
 setOverlayHider(async (tabId, hidden) => {
   const reply = chrome.tabs.sendMessage(tabId, { type: "webop:overlay", hidden }).catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, HIDER_TIMEOUT_MS); });
-  await Promise.race([reply, timeout]);
+  const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), HIDER_TIMEOUT_MS); });
+  if ((await Promise.race([reply, timeout])) === "timeout") hiderStats.timeouts++;
   clearTimeout(timer);
 });
 
@@ -32,5 +34,5 @@ if (__DEV__) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     handleDetach(tabId, reason);
   };
-  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog, adoptTab, closeSession };
+  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
 }

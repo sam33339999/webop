@@ -90,3 +90,26 @@ test("unknown tool is invalid_args", async () => {
   assert.ok("error" in r);
   assert.equal(r.error.code, "invalid_args");
 });
+
+test("background (active:false) session tab: hider resolves by reply, never by timeout", async () => {
+  const { sw, baseUrl } = await open();
+  const created = await call(sw, "tabs_create", { url: `${baseUrl}/button.html` });
+  assert.ok("content" in created);
+  const first = created.content[0];
+  assert.ok(first.type === "text");
+  const tab_id = JSON.parse(first.text).tab_id as number;
+  assert.equal(await sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.active), tab_id), false);
+  await sw.evaluate(() => { const w = (globalThis as any).__webop; w.hiderLog.length = 0; w.hiderStats.timeouts = 0; });
+  imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
+  imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
+  const { log, timeouts } = await sw.evaluate(() => {
+    const w = (globalThis as any).__webop;
+    return { log: JSON.parse(JSON.stringify(w.hiderLog)) as Array<{ hidden?: boolean; at?: string }>, timeouts: w.hiderStats.timeouts as number };
+  });
+  const shape = log.map((e) => e.hidden === undefined ? e.at : `hidden:${e.hidden}`);
+  assert.deepEqual(shape, ["hidden:true", "before", "after", "hidden:false", "hidden:true", "before", "after", "hidden:false"]);
+  assert.equal(timeouts, 0, "overlay content script did not reply in time");
+  // The overlay script really is present (otherwise "no timeout" would only mean "no receiver").
+  const state = await sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
+  assert.equal(state.hidden, false);
+});
