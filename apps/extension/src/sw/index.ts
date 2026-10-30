@@ -1,6 +1,17 @@
 import { handleDetach, send } from "./cdp.ts";
-import { getContext } from "./capture.ts";
+import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
+
+const HIDER_TIMEOUT_MS = 200;
+
+// Hide the phantom overlay while capturing; a missing or slow content script must never fail the action.
+setOverlayHider(async (tabId, hidden) => {
+  const reply = chrome.tabs.sendMessage(tabId, { type: "webop:overlay", hidden }).catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, HIDER_TIMEOUT_MS); });
+  await Promise.race([reply, timeout]);
+  clearTimeout(timer);
+});
 
 if (__DEV__) {
   /** Test-only hook: detaches the debugger and runs the same handler Chrome's onDetach event uses. */
@@ -10,5 +21,5 @@ if (__DEV__) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     handleDetach(tabId, reason);
   };
-  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send };
+  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog };
 }

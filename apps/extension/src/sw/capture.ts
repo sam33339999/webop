@@ -9,6 +9,13 @@ const OVERLAY_SETTLE_MS = 50;
 const contexts = new Map<number, ScreenshotContext>();
 let hideOverlay: (tabId: number, hidden: boolean) => Promise<void> = async () => {};
 
+/**
+ * Dev-only trace of one screenshot, in order:
+ * `{tabId, hidden:true}` -> `{tabId, at:"before"}` (just before the main Page.captureScreenshot)
+ * -> `{tabId, at:"after"}` (just after) -> `{tabId, hidden:false}`.
+ */
+export const hiderLog: Array<{ tabId: number; hidden?: boolean; at?: "before" | "after" }> = [];
+
 export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<void>): void {
   hideOverlay = fn;
 }
@@ -37,6 +44,7 @@ async function probe(tabId: number): Promise<PageProbe> {
 export async function screenshot(tabId: number): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   await attach(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+  if (__DEV__) hiderLog.push({ tabId, hidden: true });
   await hideOverlay(tabId, true);
   try {
     await new Promise((resolve) => setTimeout(resolve, OVERLAY_SETTLE_MS));
@@ -50,6 +58,7 @@ export async function screenshot(tabId: number): Promise<{ block: ContentBlock; 
       });
     }
     const { clipScale, outWidth, outHeight } = planCapture(p.width, p.height, p.dpr);
+    if (__DEV__) hiderLog.push({ tabId, at: "before" });
     const { data } = await send<{ data: string }>(tabId, "Page.captureScreenshot", {
       format: "jpeg",
       quality: JPEG_QUALITY,
@@ -57,6 +66,7 @@ export async function screenshot(tabId: number): Promise<{ block: ContentBlock; 
       captureBeyondViewport: false,
       clip: { x: p.scrollX, y: p.scrollY, width: p.width, height: p.height, scale: clipScale },
     });
+    if (__DEV__) hiderLog.push({ tabId, at: "after" });
     const ctx: ScreenshotContext = {
       viewportWidth: p.width,
       viewportHeight: p.height,
@@ -66,6 +76,7 @@ export async function screenshot(tabId: number): Promise<{ block: ContentBlock; 
     contexts.set(tabId, ctx);
     return { block: { type: "image", data, mimeType: "image/jpeg" }, ctx };
   } finally {
+    if (__DEV__) hiderLog.push({ tabId, hidden: false });
     await hideOverlay(tabId, false);
   }
 }
