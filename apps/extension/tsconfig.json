@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "types": ["chrome", "node"] },
-  "include": ["src", "build.ts", "../../tests/e2e"]
+  "include": ["src", "test", "build.ts", "../../tests/e2e"]
 }

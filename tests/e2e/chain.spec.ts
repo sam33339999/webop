@@ -99,3 +99,17 @@ test("browser closed → not_connected; relaunch → next call succeeds", async 
   }
   assert.ok(result && !result.isError, result ? textOf(result) : "no result");
 });
+
+test("extension loaded before `webop install`: opening the options page connects immediately", async () => {
+  const h = await launch();
+  cleanups.push(() => h.close());
+  // Let the SW fail a few connects so its backoff is well past the window checked below (retries at ~1, 3, 7 s; next ~15 s).
+  await sleep(8_000);
+  await h.installHost();
+  const page = await h.context.newPage();
+  await page.goto(`chrome-extension://${new URL(h.sw.url()).host}/options.html`);
+  await waitForDescriptor(h.root, 4_000);
+  const client = await mcpClient(h.root);
+  const r = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.ok(!r.isError, textOf(r));
+});

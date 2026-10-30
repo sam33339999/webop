@@ -20,6 +20,8 @@ export interface Launched {
   userDataDir: string;
   /** webop root (sockets, descriptors, wrapper); only set with `nativeHost`. */
   root: string;
+  /** Registers the native messaging host for this profile (done at launch with `nativeHost`). */
+  installHost(): Promise<void>;
   /** Closes the browser; removes the profile and root unless `keepProfile` (for relaunch tests). */
   close(o?: { keepProfile?: boolean }): Promise<void>;
 }
@@ -29,7 +31,7 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
   const userDataDir = opts.userDataDir ?? await mkdtemp(join(tmpdir(), "webop-e2e-"));
   // Short path on purpose: unix socket paths are capped near 104 bytes on macOS and os.tmpdir() there is long.
   const root = opts.root ?? await mkdtemp("/tmp/wr-");
-  if (opts.nativeHost) {
+  const installHost = async () => {
     // Chromium reads <user-data-dir>/NativeMessagingHosts/, so the throwaway profile gets its own host manifest.
     const manifest = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"));
     install({
@@ -38,7 +40,8 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
       extensionId: await extensionIdFromKey(manifest.key),
       webopCommand: [process.execPath, webopBin],
     });
-  }
+  };
+  if (opts.nativeHost) await installHost();
   const server = await startServer();
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: "chromium",
@@ -61,6 +64,7 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
     altUrl: `http://127.0.0.1:${server.port}`,
     userDataDir,
     root,
+    installHost,
     async close(o = {}) {
       await context.close();
       await server.close();

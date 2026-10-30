@@ -2,7 +2,7 @@ import { handleDetach, send } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession } from "./sessions.ts";
-import { startNativeLink } from "./native.ts";
+import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
 
@@ -18,6 +18,11 @@ setOverlayHider(async (tabId, hidden) => {
 startNativeLink();
 chrome.runtime.onStartup.addListener(startNativeLink);
 chrome.runtime.onInstalled.addListener(startNativeLink);
+chrome.runtime.onMessage.addListener((msg: { type?: string }, sender) => {
+  // Only our own extension pages may wake the link.
+  if (msg?.type === "webop:wake" && sender.id === chrome.runtime.id) wakeNativeLink();
+  return false;
+});
 
 if (__DEV__) {
   /** Test-only hook: detaches the debugger and runs the same handler Chrome's onDetach event uses. */

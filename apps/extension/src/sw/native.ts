@@ -72,3 +72,11 @@ async function connect(): Promise<void> {
 export function startNativeLink(): void {
   void connect();
 }
+
+/** Connects now, discarding any pending backoff (used when the options page is opened after a late `webop install`). */
+export function wakeNativeLink(): void {
+  if (port) return;
+  attempts = 0;
+  clearTimeout(retry);
+  void connect();
+}
