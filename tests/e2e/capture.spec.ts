@@ -76,6 +76,7 @@ test("pending send fails with detached_by_user when the user cancels the debugge
     const pending = w.send(id, "Runtime.evaluate", { expression: "new Promise(r => setTimeout(r, 2000))", awaitPromise: true })
       .then(() => "resolved", (e: { code?: string }) => e.code ?? "no-code");
     await new Promise((r) => setTimeout(r, 200));
+    // Real detach first: the pending command rejects before the canceled_by_user event is delivered.
     await w.simulateDetach(id, "canceled_by_user");
     return pending;
   }, tab_id);
