@@ -17,15 +17,21 @@ pnpm install
 pnpm -r build
 ```
 
-1. 開啟 Chrome 的 `chrome://extensions`，啟用「開發人員模式」，點「載入未封裝項目」，選擇 `apps/extension/dist`。
-2. 註冊 Native Messaging host：
+**順序很重要：先註冊 host，再載入擴充功能。**
+
+1. 註冊 Native Messaging host（這一步必須在載入擴充功能之前）：
 
    ```bash
    node apps/webop/dist/webop.mjs install
    ```
 
    指令會印出 extension id、manifest 與 wrapper 路徑。（測試用途可加 `--browser-dir <dir>` 指定寫入目錄。）
-3. 開啟擴充功能的 options 頁，把要讓 agent 操作的網站加入白名單（以 eTLD+1 為單位）。M3 只允許白名單內網域，其他一律回傳 `permission_denied`。
+   搬移專案目錄、或在別處重新 build 之後，必須重新執行一次 `webop install`，host 才會指向新的位置。
+2. 開啟 Chrome 的 `chrome://extensions`，啟用「開發人員模式」，點「載入未封裝項目」，選擇 `apps/extension/dist`。
+   若你是先載入擴充功能、後執行 `webop install`：開啟擴充功能的 options 頁（或在 `chrome://extensions` 重新載入擴充功能），擴充功能就會立刻重新連線；否則可能要重啟 Chrome 才連得上。
+3. 開啟擴充功能的 options 頁，把要讓 agent 操作的網站加入白名單：**一行一個網站，輸入完按「Save」才會生效**。M3 只允許白名單內網站，其他一律回傳 `permission_denied`。
+   - 白名單以網站（eTLD+1）為單位，例如加入 `example.com` 會涵蓋 `mail.example.com`。
+   - 但共用網域後綴（private suffix，如 `github.io`、`vercel.app`、`blogspot.com`、`amazonaws.com`）是以「每個應用」為單位：加入 `alice.github.io` 不會放行 `evil.github.io`。
 
 ## opencode 設定
 
@@ -60,8 +66,8 @@ pnpm -r build
 
 | 錯誤碼 | 意義 |
 |---|---|
-| `not_connected` | 找不到執行中的 Chrome／擴充功能連線（Chrome 未開或擴充未載入） |
-| `profile_required` | 有多個 Chrome profile 連線，需指定要使用哪一個 |
+| `not_connected` | 找不到執行中的 Chrome／擴充功能連線：Chrome 未開、擴充未載入、host 尚未註冊（見安裝順序），或與 host 的連線中斷／socket 無法使用（重新連線後再試） |
+| `profile_required` | M3 的意思是「同時有多個 profile 在線」：請只讓一個執行 webop 的 Chrome profile 保持開啟（選擇 profile 的功能在 M5 提供） |
 | `permission_denied` | 網站不在白名單內，需由使用者在 options 頁加入 |
 | `stale_ref` | ref 已失效（頁面重新載入或 DOM 改變），請重新 `browser_read_page` |
 | `oob` | 座標超出截圖範圍 |
@@ -72,7 +78,6 @@ pnpm -r build
 
 - 操作期間 Chrome 會顯示 debugger 資訊列（「webop 正在偵錯此瀏覽器」），無法隱藏；使用者關閉它會觸發 `detached_by_user`。
 - 跨來源 iframe 的內容在截圖中看得到，但 `browser_read_page` 讀不到其無障礙樹內容。
-- M3 僅允許白名單內的網站，其他網站一律 `permission_denied`。
 
 ## 驗收紀錄
 

@@ -12,6 +12,10 @@ agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop nativ
 - 實作計畫：[docs/superpowers/plans/2026-10-31-webop-m1-m3.md](docs/superpowers/plans/2026-10-31-webop-m1-m3.md)
 - opencode 接法：[docs/agents/opencode.md](docs/agents/opencode.md)
 
+## 安裝順序
+
+先執行 `node apps/webop/dist/webop.mjs install` 註冊 Native Messaging host，再在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。細節見 [docs/agents/opencode.md](docs/agents/opencode.md)。
+
 ## 開發
 
 需要 Node 26（`fnm use 26`）與 pnpm。
@@ -19,6 +23,6 @@ agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop nativ
 ```bash
 pnpm install
 pnpm test        # 單元測試（node --test）
-pnpm test:e2e    # e2e（Playwright Chromium，暫存 profile）
+pnpm test:e2e    # e2e（Playwright Chromium，暫存 profile；dev build 輸出到 apps/extension/dist-dev，不影響 dist）
 pnpm typecheck
 ```
