@@ -2,13 +2,18 @@
   "name": "webop",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=26" },
+  "engines": {
+    "node": ">=26"
+  },
   "scripts": {
     "test": "node --test \"packages/*/test/*.test.ts\"",
-    "typecheck": "pnpm -r exec tsc -p ."
+    "typecheck": "pnpm -r exec tsc -p .",
+    "test:e2e": "pnpm --filter extension build:dev && node --test tests/e2e/*.spec.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^26.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "@webop/core": "workspace:*"
   }
 }

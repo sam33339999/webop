@@ -4,3 +4,4 @@
 # SDD 工作區（本機紀錄）
 /.superpowers/
 node_modules/
+apps/extension/dist/

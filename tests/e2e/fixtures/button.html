@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>button</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #btn { width: 200px; height: 80px; }
+</style>
+</head>
+<body>
+<button id="btn">Click me</button>
+<script>
+  document.getElementById("btn").addEventListener("click", (event) => {
+    document.title = "clicked:" + event.isTrusted;
+  });
+</script>
+</body>
+</html>
