@@ -4,6 +4,7 @@ import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertOwned, createTab, listTabs, openSession } from "./sessions.ts";
+import { siteOf } from "@webop/core/domain";
 import { checkSite, isSiteAllowed } from "./permissions.ts";
 
 type Outcome = { content: ContentBlock[] };
@@ -169,18 +170,35 @@ function urlArg(args: Record<string, unknown>): string {
   return args.url;
 }
 
-/** chrome.tabs.goBack skips entries the user never interacted with; fall back to the exact history entry via CDP. */
+/** Resolves the history entry through CDP and checks its site BEFORE loading it. */
 async function goHistory(tabId: number, dir: "back" | "forward"): Promise<void> {
-  try {
-    await (dir === "back" ? chrome.tabs.goBack(tabId) : chrome.tabs.goForward(tabId));
-    return;
-  } catch {
-    // fall through
-  }
-  const h = await send<{ currentIndex: number; entries: { id: number }[] }>(tabId, "Page.getNavigationHistory");
+  const h = await send<{ currentIndex: number; entries: { id: number; url: string }[] }>(tabId, "Page.getNavigationHistory");
   const entry = h.entries[h.currentIndex + (dir === "back" ? -1 : 1)];
   if (!entry) throw new CdpError("invalid_args", `Cannot go ${dir}: no such history entry.`);
+  await checkSite(entry.url);
   await send(tabId, "Page.navigateToHistoryEntry", { entryId: entry.id });
+}
+
+/** Re-checks the tab's current site after content was produced; denial withholds the content. */
+async function recheck(tabId: number, performed: boolean): Promise<void> {
+  const url = await currentUrl(tabId);
+  try {
+    await checkSite(url);
+  } catch (e) {
+    if (!(e instanceof CdpError) || e.code !== "permission_denied") throw e;
+    const what = performed ? "The action WAS performed, but the" : "The";
+    throw new CdpError("permission_denied", `${what} tab is now on a site that is not allowed (${siteOf(url) ?? "non-web page"}); no content is returned. ${e.message}`);
+  }
+}
+
+/** Gives a navigation triggered by an action time to start, then waits for it to settle. */
+async function settle(tabId: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, 150));
+  for (let i = 0; i < 50; i++) {
+    const t = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!t || t.status !== "loading") return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 async function navigate(session_id: string, args: Record<string, unknown>): Promise<Outcome> {
@@ -215,7 +233,12 @@ async function run(call: ToolCall): Promise<Outcome> {
     const tab = await createTab(call.session_id, url);
     const tab_id = tab.id as number;
     await afterLoad(tab_id, async () => {});
-    await checkSite(await currentUrl(tab_id));
+    try {
+      await checkSite(await currentUrl(tab_id));
+    } catch (e) {
+      await chrome.tabs.remove(tab_id).catch(() => {});
+      throw e;
+    }
     return { content: [{ type: "text", text: JSON.stringify({ tab_id, url: await currentUrl(tab_id) }) }] };
   }
   if (call.tool === "tabs_close") {
@@ -229,12 +252,14 @@ async function run(call: ToolCall): Promise<Outcome> {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
     await authorize(call.session_id, tabId);
-    if (action === "screenshot") {
-      const { block } = await screenshot(tabId);
-      return { content: [block] };
+    const performed = action !== "screenshot";
+    if (performed) {
+      await perform(action, tabId, call.args);
+      await settle(tabId);
     }
-    await perform(action, tabId, call.args);
+    await recheck(tabId, performed);
     const { block } = await screenshot(tabId);
+    await recheck(tabId, performed);
     return { content: [block] };
   }
   if (call.tool === "read_page") {
@@ -251,6 +276,7 @@ async function run(call: ToolCall): Promise<Outcome> {
     if (!r) throw new CdpError("internal", "Page content script returned no reply.");
     if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
     await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
+    await recheck(tabId, false);
     return { content: [{ type: "text", text: r.text }] };
   }
   invalid(`Unknown tool: ${String(call.tool)}`);

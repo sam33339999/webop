@@ -171,3 +171,49 @@ test("session ownership is persisted in chrome.storage.session", async () => {
   const stored = await sw.evaluate(() => chrome.storage.session.get("webop.sessions"));
   assert.deepEqual((stored["webop.sessions"] as any).sessions.test.tabIds, [tab_id]);
 });
+
+test("action that navigates cross-site returns permission_denied without an image", async () => {
+  const { sw, baseUrl, altUrl } = await open();
+  const to = encodeURIComponent(`${altUrl}/button.html`);
+  const tab_id = await create(sw, `${baseUrl}/link.html?to=${to}`);
+  assert.ok("content" in await call(sw, "computer", { action: "screenshot", tab_id }));
+  const r = await call(sw, "computer", { action: "left_click", coordinate: [50, 50], tab_id });
+  const e = errOf(r);
+  assert.equal(e.code, "permission_denied");
+  assert.match(e.message, /WAS performed/);
+  assert.ok(!("content" in r));
+  assert.equal(new URL(await sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.url ?? ""), tab_id)).hostname, "127.0.0.1");
+});
+
+test("forward into a denied history entry is refused before loading", async () => {
+  const { sw, baseUrl, altUrl } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  // Build history allowed -> denied -> allowed through the page itself (the navigate tool would refuse the middle hop).
+  await sw.evaluate(async ([id, u]) => { await chrome.tabs.update(id, { url: u }); }, [tab_id, `${altUrl}/button.html`] as const);
+  await waitForUrl(sw, tab_id, "127.0.0.1");
+  await sw.evaluate(async ([id, u]) => { await chrome.tabs.update(id, { url: u }); }, [tab_id, `${baseUrl}/form.html`] as const);
+  await waitForUrl(sw, tab_id, "localhost");
+  const url = () => sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.url ?? ""), tab_id);
+  // back from form.html targets the denied entry
+  assert.equal(errOf(await call(sw, "navigate", { tab_id, url: "back" })).code, "permission_denied");
+  assert.equal(await url(), `${baseUrl}/form.html`);
+  // jump to the first (allowed) entry, then forward targets the denied entry
+  await sw.evaluate(async (id) => {
+    const send = (globalThis as any).__webop.send;
+    const h = await send(id, "Page.getNavigationHistory");
+    await send(id, "Page.navigateToHistoryEntry", { entryId: h.entries[0].id });
+  }, tab_id);
+  await sw.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+  assert.equal(await url(), `${baseUrl}/button.html`);
+  assert.equal(errOf(await call(sw, "navigate", { tab_id, url: "forward" })).code, "permission_denied");
+  assert.equal(await url(), `${baseUrl}/button.html`);
+});
+
+test("tabs_create that redirects to a denied site closes the tab", async () => {
+  const { sw, baseUrl, altUrl } = await open();
+  const to = encodeURIComponent(`${altUrl}/button.html`);
+  const e = errOf(await call(sw, "tabs_create", { url: `${baseUrl}/redirect.html?to=${to}` }));
+  assert.equal(e.code, "permission_denied");
+  assert.deepEqual(JSON.parse(textOf(await call(sw, "tabs_list", {}))), []);
+  assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.filter((t) => (t.url ?? "").includes("127.0.0.1") || (t.pendingUrl ?? "").includes("127.0.0.1")).length)), 0);
+});
