@@ -1,15 +1,19 @@
-import { getDomain, getHostname } from "tldts";
+import { getDomain } from "tldts";
 
-/** eTLD+1 of an http(s) URL; hostname for IPs and suffix-less hosts (e.g. localhost); null otherwise. */
+/**
+ * Site key of an http(s) URL: the registrable domain, where private suffixes (github.io, vercel.app, ...)
+ * count as public suffixes so each app is its own site. IPs and suffix-less hosts (localhost) map to the
+ * hostname; anything not http(s) is null. The host is normalised by WHATWG URL first, as Chrome does.
+ */
 export function siteOf(url: string): string | null {
-  let protocol: string;
+  let parsed: URL;
   try {
-    protocol = new URL(url).protocol;
+    parsed = new URL(url);
   } catch {
     return null;
   }
-  if (protocol !== "http:" && protocol !== "https:") return null;
-  const host = getHostname(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const host = parsed.hostname;
   if (!host) return null;
-  return getDomain(url) ?? host;
+  return getDomain(host, { allowPrivateDomains: true }) ?? host;
 }
