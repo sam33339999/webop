@@ -6,7 +6,7 @@
     "node": ">=26"
   },
   "scripts": {
-    "test": "node --test \"packages/*/test/*.test.ts\"",
+    "test": "node --test \"packages/*/test/*.test.ts\" \"apps/webop/test/*.test.ts\"",
     "typecheck": "pnpm -r exec tsc -p .",
     "test:e2e": "pnpm --filter extension build:dev && node --test tests/e2e/*.spec.ts"
   },
