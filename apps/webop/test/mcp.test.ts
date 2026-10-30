@@ -147,3 +147,52 @@ test("timeout → timeout", async () => {
   await sleep(10);
   host.close();
 });
+
+test("garbage lines from host are ignored; next result still resolves", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => {
+    s.write("null\n\"x\"\n[1]\n");
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] });
+  });
+  const client = await connectClient({ root });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(text(r), "ok");
+  host.close();
+});
+
+test("malformed result for pending call → internal promptly", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: "nope" }));
+  const client = await connectClient({ root, callTimeoutMs: 5000 });
+  const t0 = Date.now();
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /^internal:/);
+  assert.ok(Date.now() - t0 < 2000);
+  host.close();
+});
+
+test("concurrent first calls open exactly one session", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] }));
+  const client = await connectClient({ root });
+  const rs: any[] = await Promise.all([1, 2, 3].map(() => client.callTool({ name: "browser_tabs_list", arguments: {} })));
+  assert.deepEqual(rs.map(text), ["ok", "ok", "ok"]);
+  assert.equal(host.seen.filter((m) => m.type === "open").length, 1);
+  assert.equal(host.socks.length, 1);
+  host.close();
+});
+
+test("late result after timeout is ignored", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => {
+    setTimeout(() => writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "late" }] }), 250);
+  });
+  const client = await connectClient({ root, callTimeoutMs: 100 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^timeout:/);
+  await sleep(400);
+  host.close();
+});

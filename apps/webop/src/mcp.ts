@@ -4,7 +4,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { ContentBlock, ErrorCode, HostToMcp, McpToHost, ToolName } from "@webop/core/protocol";
+import type { ContentBlock, ErrorCode, McpToHost, ToolName } from "@webop/core/protocol";
 import { readLines, writeLine } from "./ndjson.ts";
 import { logDir, runDir, socketPath } from "./paths.ts";
 import { TOOL_DEFS } from "./tool-schemas.ts";
@@ -15,6 +15,15 @@ const fail = (code: ErrorCode, message: string): Outcome => ({ error: { code, me
 interface Conn {
   sock: net.Socket;
   pending: Map<string, (o: Outcome) => void>;
+}
+
+function logLine(m: string): void {
+  try {
+    fs.mkdirSync(logDir(), { recursive: true });
+    fs.appendFileSync(path.join(logDir(), "mcp.log"), `${new Date().toISOString()} ${m}\n`);
+  } catch {
+    // logging must never break stdio
+  }
 }
 
 function pidAlive(pid: unknown): boolean {
@@ -87,19 +96,40 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
         else dropConn(c);
       });
       readLines(sock, (m) => {
-        const msg = m as HostToMcp & { content?: ContentBlock[]; error?: { code: ErrorCode; message: string } };
+        try {
+          handleMessage(m);
+        } catch (e) {
+          logLine(`host message handler error ${e}`);
+        }
+      });
+      const handleMessage = (m: unknown): void => {
+        if (typeof m !== "object" || m === null || Array.isArray(m)) {
+          logLine(`ignored non-object host message: ${JSON.stringify(m)}`);
+          return;
+        }
+        const msg = m as Record<string, unknown>;
         if (msg.type === "opened") {
           opened = true;
           conn = c;
           resolve(c);
         } else if (msg.type === "result") {
+          if (typeof msg.id !== "string") {
+            logLine("ignored result without string id");
+            return;
+          }
           const f = c.pending.get(msg.id);
-          if (f) {
-            c.pending.delete(msg.id);
-            f(msg.error ? { error: msg.error } : { content: msg.content ?? [] });
+          if (!f) return;
+          c.pending.delete(msg.id);
+          const err = msg.error as Record<string, unknown> | null | undefined;
+          if (Array.isArray(msg.content)) {
+            f({ content: msg.content as ContentBlock[] });
+          } else if (typeof err === "object" && err !== null && typeof err.code === "string" && typeof err.message === "string") {
+            f({ error: { code: err.code as ErrorCode, message: err.message } });
+          } else {
+            f(fail("internal", "malformed host response"));
           }
         }
-      });
+      };
       sock.once("connect", () => {
         const name = server.server.getClientVersion()?.name ?? "unknown";
         writeLine(sock, { type: "open", client_name: name } satisfies McpToHost);
@@ -153,14 +183,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
 
 export async function runMcp(): Promise<void> {
   const server = createMcpServer({});
-  const log = (m: string) => {
-    try {
-      fs.mkdirSync(logDir(), { recursive: true });
-      fs.appendFileSync(path.join(logDir(), "mcp.log"), `${new Date().toISOString()} ${m}\n`);
-    } catch {
-      // logging must never break stdio
-    }
-  };
+  const log = logLine;
   process.on("uncaughtException", (e) => log(`uncaughtException ${e.stack ?? e}`));
   process.on("unhandledRejection", (e) => log(`unhandledRejection ${e}`));
   await server.connect(new StdioServerTransport());
