@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>ax</title>
+<style>html, body { margin: 0; } #spacer { height: 3000px; } #far { display: block; height: 40px; width: 160px; } #tail { height: 1500px; }</style>
+</head>
+<body>
+<h1>Heading One</h1>
+<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<button id="submit">Submit</button>
+<a href="/other.html">Go elsewhere</a>
+<label>Secret <input id="pw" type="password" value="hunter2"></label>
+<input id="name" type="text" placeholder="Your name">
+<select id="sel" aria-label="Color"><option value="r">Red</option><option value="g" selected>Green</option></select>
+<div id="spacer"></div>
+<button id="far">Far away</button>
+<div id="tail"></div>
+<script>
+  document.getElementById("submit").addEventListener("click", (e) => { document.title = "clicked:" + e.isTrusted; });
+  document.getElementById("far").addEventListener("click", (e) => { document.title = "far:" + e.isTrusted; });
+</script>
+</body>
+</html>
