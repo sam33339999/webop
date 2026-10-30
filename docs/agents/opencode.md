@@ -77,7 +77,7 @@ pnpm -r build
 ## 已知限制
 
 - 操作期間 Chrome 會顯示 debugger 資訊列（「webop 正在偵錯此瀏覽器」），無法隱藏；使用者關閉它會觸發 `detached_by_user`。
-- 跨來源 iframe 的內容在截圖中看得到，但 `browser_read_page` 讀不到其無障礙樹內容。
+- 跨來源 iframe 的內容在截圖中看得到，但 `browser_read_page` 讀不到其無障礙樹內容；對跨網站 iframe 內的點擊／輸入會被拒絕（`permission_denied`）。
 
 ## 驗收紀錄
 
