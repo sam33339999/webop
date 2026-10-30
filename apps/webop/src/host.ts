@@ -28,8 +28,9 @@ function rmQuiet(p: string): void {
   fs.rmSync(p, { force: true });
 }
 
-export async function runHost(io: { input: Readable; output: Writable; root?: string }): Promise<void> {
+export async function runHost(io: { input: Readable; output: Writable; root?: string; pid?: number }): Promise<void> {
   const { input, output, root } = io;
+  const myPid = io.pid ?? process.pid;
   const logFile = path.join(logDir(root), "host.log");
   const log = (msg: string): void => {
     try {
@@ -47,6 +48,14 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
   const sockets = new Set<net.Socket>();
   let server: net.Server | undefined;
   let profileId: string | undefined;
+  let owned = false;
+  const readDescriptorPid = (id: string): unknown => {
+    try {
+      return JSON.parse(fs.readFileSync(descriptorPath(id, root), "utf8"))?.pid;
+    } catch {
+      return undefined;
+    }
+  };
 
   const sweepStale = (): void => {
     let names: string[];
@@ -109,22 +118,29 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
 
   let hello: Hello | undefined;
   const startListening = async (h: Hello): Promise<void> => {
-    hello = h;
-    profileId = h.profile_id;
+    const id = h.profile_id;
+    const prev = readDescriptorPid(id);
+    if (typeof prev === "number" && prev !== myPid && !isDead(prev)) {
+      log(`taking over profile ${id} from live host pid ${prev}`);
+    }
     fs.mkdirSync(runDir(root), { recursive: true, mode: 0o700 });
     fs.chmodSync(runDir(root), 0o700);
-    const sp = socketPath(profileId, root);
+    const sp = socketPath(id, root);
     rmQuiet(sp);
-    server = net.createServer(onClient);
+    const srv = net.createServer(onClient);
     await new Promise<void>((resolve, reject) => {
-      server!.once("error", reject);
-      server!.listen(sp, () => resolve());
+      srv.once("error", reject);
+      srv.listen(sp, () => resolve());
     });
+    server = srv;
     fs.chmodSync(sp, 0o600);
     fs.writeFileSync(
-      descriptorPath(profileId, root),
-      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: process.pid, started_at: new Date().toISOString() }),
+      descriptorPath(id, root),
+      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: myPid, started_at: new Date().toISOString() }),
     );
+    hello = h;
+    profileId = id;
+    owned = true;
     log(`listening on ${sp}`);
   };
 
@@ -165,8 +181,15 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
   });
 
   for (const s of sockets) s.destroy();
-  if (server) await new Promise<void>((r) => server!.close(() => r()));
-  if (profileId) {
+  // Only remove files if the descriptor still names us; a newer host may have
+  // taken over this profile. Closing a unix server unlinks its path, which
+  // would delete the newer host's socket, so a displaced host just unrefs it.
+  const stillOwner = owned && profileId !== undefined && readDescriptorPid(profileId) === myPid;
+  if (server) {
+    if (stillOwner) await new Promise<void>((r) => server!.close(() => r()));
+    else server.unref();
+  }
+  if (stillOwner && profileId) {
     rmQuiet(socketPath(profileId, root));
     rmQuiet(descriptorPath(profileId, root));
   }

@@ -170,3 +170,44 @@ test("stdin end → socket and descriptor removed", async () => {
   assert.equal(fs.existsSync(t.sock), false);
   assert.equal(fs.existsSync(descriptorPath("p1", t.root)), false);
 });
+
+test("replaced host: old host exit leaves new host's socket and descriptor", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wh-"));
+  const hello = encodeFrame({ type: "hello", profile_id: "p", profile_label: "L", extension_version: "1" });
+  const mk = (pid: number) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const sent: any[] = [];
+    const dec = new FrameDecoder();
+    output.on("data", (c: Buffer) => sent.push(...dec.push(c)));
+    return { input, sent, done: runHost({ input, output, root, pid }) };
+  };
+  const a = mk(process.ppid); // a live pid that is not ours
+  a.input.write(hello);
+  await until(() => fs.existsSync(descriptorPath("p", root)));
+  const b = mk(process.pid);
+  b.input.write(hello);
+  await until(() => JSON.parse(fs.readFileSync(descriptorPath("p", root), "utf8")).pid === process.pid);
+  a.input.end();
+  await a.done;
+  assert.equal(fs.existsSync(descriptorPath("p", root)), true);
+  assert.equal(fs.existsSync(socketPath("p", root)), true);
+  const c = net.createConnection(socketPath("p", root));
+  await new Promise((r) => c.once("connect", r));
+  const msgs: any[] = [];
+  readLines(c, (m) => msgs.push(m));
+  writeLine(c, { type: "open", client_name: "x" });
+  await until(() => msgs.length === 1 && b.sent.length === 1);
+  assert.equal(b.sent[0].type, "session_open");
+  c.destroy(); b.input.end(); await b.done;
+  assert.equal(fs.existsSync(descriptorPath("p", root)), false);
+});
+
+test("exit with descriptor pid not ours leaves files untouched", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  fs.writeFileSync(descriptorPath("p1", t.root), JSON.stringify({ profile_id: "p1", pid: process.ppid }));
+  t.input.end(); await t.done;
+  assert.equal(fs.existsSync(descriptorPath("p1", t.root)), true);
+});
