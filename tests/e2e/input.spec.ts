@@ -108,3 +108,55 @@ test("overlay hidden during capture", async () => {
   const log: Array<{ hidden?: boolean; at?: string }> = await h.sw.evaluate(() => JSON.parse(JSON.stringify((globalThis as any).__webop.hiderLog)));
   assert.deepEqual(log.map((e) => e.hidden === undefined ? e.at : `hidden:${e.hidden}`), ["hidden:true", "before", "after", "hidden:false"]);
 });
+
+async function framed(h: Launched, src: string, frameUrlPrefix: string) {
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/frame.html?src=${encodeURIComponent(src)}`);
+  const page = h.context.pages().find((p) => p.url().startsWith(`${h.baseUrl}/frame.html`));
+  assert.ok(page);
+  let frame = page.frames().find((f) => f.url().startsWith(frameUrlPrefix));
+  for (let i = 0; i < 50 && !frame; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    frame = page.frames().find((f) => f.url().startsWith(frameUrlPrefix));
+  }
+  assert.ok(frame, "frame loaded");
+  await frame.waitForLoadState("load");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  return { tab_id, page, frame };
+}
+
+test("click inside a cross-site iframe is denied and nothing reaches the frame", async () => {
+  const h = await open();
+  const { tab_id, page, frame } = await framed(h, `${h.altUrl}/button.html`, h.altUrl);
+  const coordinate = await centerOf(h, page, tab_id, "#f");
+  for (const action of ["left_click", "right_click", "double_click", "hover"] as const) {
+    const r = await call(h.sw, "computer", { action, tab_id, coordinate });
+    assert.ok("error" in r, action);
+    assert.equal(r.error.code, "permission_denied", action);
+    assert.match(r.error.message, /cross-site frame \(127\.0\.0\.1\)/);
+  }
+  const drag = await call(h.sw, "computer", { action: "left_click_drag", tab_id, start_coordinate: coordinate, coordinate: [coordinate[0] + 5, coordinate[1]] });
+  assert.ok("error" in drag && drag.error.code === "permission_denied");
+  assert.equal(await frame.evaluate(() => document.title), "button");
+});
+
+test("type and key while a cross-site iframe has focus are denied", async () => {
+  const h = await open();
+  const { tab_id, page, frame } = await framed(h, `${h.altUrl}/form.html`, h.altUrl);
+  await frame.focus("#name");
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), "IFRAME");
+  for (const args of [{ action: "type", text: "stolen" }, { action: "key", text: "a" }]) {
+    const r = await call(h.sw, "computer", { ...args, tab_id });
+    assert.ok("error" in r, args.action);
+    assert.equal(r.error.code, "permission_denied", args.action);
+  }
+  assert.equal(await frame.inputValue("#name"), "");
+});
+
+test("same-site iframe is allowed", async () => {
+  const h = await open();
+  const { tab_id, page, frame } = await framed(h, `${h.baseUrl}/button.html`, `${h.baseUrl}/button.html`);
+  const coordinate = await centerOf(h, page, tab_id, "#f");
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  assert.equal(await frame.evaluate(() => document.title), "clicked:true");
+});

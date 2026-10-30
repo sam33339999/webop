@@ -55,6 +55,14 @@ test("password value redacted", async () => {
   assert.ok(text.includes("[value redacted]"));
 });
 
+test("sensitive input with role=button does not leak its value as the name", async () => {
+  const { h, tab_id } = await setup();
+  for (const args of [{ tab_id }, { tab_id, filter: "interactive" }]) {
+    const text = await readText(h, args);
+    assert.ok(!text.includes("topsecret42"), JSON.stringify(args));
+  }
+});
+
 test("interactive filter drops plain text", async () => {
   const { h, tab_id } = await setup();
   const text = await readText(h, { tab_id, filter: "interactive" });

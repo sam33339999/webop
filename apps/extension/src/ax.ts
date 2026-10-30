@@ -1,7 +1,8 @@
 // Accessibility-tree content script: builds a text AX tree and hands out stable `ref_N` handles for elements.
 type AxMessage =
   | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number; ref_base?: number }
-  | { type: "webop:ref_point"; ref: string };
+  | { type: "webop:ref_point"; ref: string }
+  | { type: "webop:frame_check"; x?: number; y?: number };
 
 const MAX_DEPTH = 15;
 const MAX_NODES = 10000;
@@ -113,7 +114,7 @@ function nameOf(el: Element, role: string): string {
   const tag = el.tagName.toLowerCase();
   if (tag === "input") {
     const i = el as HTMLInputElement;
-    if (role === "button" && i.value) return clip(i.value);
+    if (role === "button" && i.value && !isSensitive(el)) return clip(i.value);
     return clip(i.placeholder || el.getAttribute("title") || "");
   }
   if (tag === "textarea") return clip((el as HTMLTextAreaElement).placeholder || el.getAttribute("title") || "");
@@ -259,11 +260,41 @@ function refPoint(ref: string): { x: number; y: number } | { error: "stale_ref";
   return { x, y };
 }
 
+type FrameVerdict = { ok: true } | { ok: false; src: string };
+
+/**
+ * Is the input target (the element at x,y, or the focused element when no point is given) inside a frame whose
+ * content we cannot vouch for? Same-origin frames are descended into (their nested frames count too);
+ * a frame whose document is unreachable is cross-origin and therefore reported with its src.
+ */
+function frameCheck(x?: number, y?: number): FrameVerdict {
+  let doc: Document = document;
+  let px = x;
+  let py = y;
+  for (let depth = 0; depth < 8; depth++) {
+    const el: Element | null = px === undefined || py === undefined ? doc.activeElement : doc.elementFromPoint(px, py);
+    if (!el || (el.tagName !== "IFRAME" && el.tagName !== "FRAME")) return { ok: true };
+    const frame = el as HTMLIFrameElement;
+    let inner: Document | null = null;
+    try { inner = frame.contentDocument; } catch { inner = null; }
+    if (!inner) return { ok: false, src: frame.src || frame.getAttribute("src") || "" };
+    if (px !== undefined && py !== undefined) {
+      const r = frame.getBoundingClientRect();
+      px -= r.left + frame.clientLeft;
+      py -= r.top + frame.clientTop;
+    }
+    doc = inner;
+  }
+  return { ok: false, src: "" };
+}
+
 chrome.runtime.onMessage.addListener((msg: AxMessage, _sender, sendResponse) => {
   if (msg?.type === "webop:read_page") {
     sendResponse(readPage(msg));
   } else if (msg?.type === "webop:ref_point") {
     sendResponse(refPoint(msg.ref));
+  } else if (msg?.type === "webop:frame_check") {
+    sendResponse(frameCheck(msg.x, msg.y));
   }
   return false;
 });
