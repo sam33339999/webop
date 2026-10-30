@@ -67,6 +67,22 @@ test("debugger detach by user -> detached_by_user, then reattach", async () => {
   imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
 });
 
+test("pending send fails with detached_by_user when the user cancels the debugger", async () => {
+  const { sw, baseUrl } = await open();
+  const tab_id = await openTab(sw, `${baseUrl}/button.html`);
+  imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
+  const code = await sw.evaluate(async (id) => {
+    const w = (globalThis as any).__webop;
+    const pending = w.send(id, "Runtime.evaluate", { expression: "new Promise(r => setTimeout(r, 2000))", awaitPromise: true })
+      .then(() => "resolved", (e: { code?: string }) => e.code ?? "no-code");
+    await new Promise((r) => setTimeout(r, 200));
+    await w.simulateDetach(id, "canceled_by_user");
+    return pending;
+  }, tab_id);
+  assert.equal(code, "detached_by_user");
+  imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
+});
+
 test("unknown tool is invalid_args", async () => {
   const { sw } = await open();
   const r = await call(sw, "read_page" as never, {});

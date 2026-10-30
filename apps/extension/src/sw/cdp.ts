@@ -15,6 +15,7 @@ const ATTACH_TIMEOUT_MS = 5000;
 const attached = new Set<number>();
 const attaching = new Map<number, Promise<void>>();
 const pending = new Map<number, Set<(e: CdpError) => void>>();
+const userCancels = new Map<number, number>();
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
@@ -24,6 +25,7 @@ export function onDetached(cb: (tabId: number, reason: string) => void): void {
 /** Single place that reacts to a debugger detach, whether it came from Chrome or from the dev hook. */
 export function handleDetach(tabId: number, reason: string): void {
   attached.delete(tabId);
+  if (reason === "canceled_by_user") userCancels.set(tabId, (userCancels.get(tabId) ?? 0) + 1);
   const waiting = pending.get(tabId);
   if (waiting && reason === "canceled_by_user") {
     for (const reject of [...waiting]) {
@@ -90,10 +92,15 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
   let abort!: (e: CdpError) => void;
   const aborted = new Promise<never>((_, reject) => { abort = reject; });
   set.add(abort);
+  const cancelsBefore = userCancels.get(tabId) ?? 0;
   try {
     return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted]);
   } catch (e) {
     if (e instanceof CdpError) throw e;
+    // Chrome may reject the in-flight command before our detach handler runs.
+    if ((userCancels.get(tabId) ?? 0) > cancelsBefore) {
+      throw new CdpError("detached_by_user", "The user closed the debugging session for this tab. Retry to re-attach.");
+    }
     throw new CdpError("internal", `${method} failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     set.delete(abort);
