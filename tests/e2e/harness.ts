@@ -1,24 +1,44 @@
 import { chromium, type BrowserContext, type Worker } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extensionIdFromKey } from "@webop/core/extension-id";
+import { install } from "../../apps/webop/src/install.ts";
 import type { ToolName, ToolResult } from "@webop/core/protocol";
 import { startServer } from "./fixtures/server.ts";
 
-const dist = join(dirname(fileURLToPath(import.meta.url)), "../../apps/extension/dist");
+const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const dist = join(repo, "apps/extension/dist");
+export const webopBin = join(repo, "apps/webop/dist/webop.mjs");
 
 export interface Launched {
   context: BrowserContext;
   sw: Worker;
   baseUrl: string;
   altUrl: string;
-  close(): Promise<void>;
+  userDataDir: string;
+  /** webop root (sockets, descriptors, wrapper); only set with `nativeHost`. */
+  root: string;
+  /** Closes the browser; removes the profile and root unless `keepProfile` (for relaunch tests). */
+  close(o?: { keepProfile?: boolean }): Promise<void>;
 }
 
 /** Always a throwaway profile under the OS temp dir; never the user's own profile. */
-export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: number } = {}): Promise<Launched> {
-  const userDataDir = await mkdtemp(join(tmpdir(), "webop-e2e-"));
+export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: number; userDataDir?: string; root?: string } = {}): Promise<Launched> {
+  const userDataDir = opts.userDataDir ?? await mkdtemp(join(tmpdir(), "webop-e2e-"));
+  // Short path on purpose: unix socket paths are capped near 104 bytes on macOS and os.tmpdir() there is long.
+  const root = opts.root ?? await mkdtemp("/tmp/wr-");
+  if (opts.nativeHost) {
+    // Chromium reads <user-data-dir>/NativeMessagingHosts/, so the throwaway profile gets its own host manifest.
+    const manifest = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"));
+    install({
+      browserDir: userDataDir,
+      root,
+      extensionId: await extensionIdFromKey(manifest.key),
+      webopCommand: [process.execPath, webopBin],
+    });
+  }
   const server = await startServer();
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: "chromium",
@@ -39,10 +59,15 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
     sw,
     baseUrl: `http://localhost:${server.port}`,
     altUrl: `http://127.0.0.1:${server.port}`,
-    async close() {
+    userDataDir,
+    root,
+    async close(o = {}) {
       await context.close();
       await server.close();
-      await rm(userDataDir, { recursive: true, force: true });
+      if (!o.keepProfile) {
+        await rm(userDataDir, { recursive: true, force: true });
+        await rm(root, { recursive: true, force: true });
+      }
     },
   };
 }

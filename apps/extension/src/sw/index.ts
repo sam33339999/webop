@@ -2,6 +2,7 @@ import { handleDetach, send } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession } from "./sessions.ts";
+import { startNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
 
@@ -13,6 +14,10 @@ setOverlayHider(async (tabId, hidden) => {
   await Promise.race([reply, timeout]);
   clearTimeout(timer);
 });
+
+startNativeLink();
+chrome.runtime.onStartup.addListener(startNativeLink);
+chrome.runtime.onInstalled.addListener(startNativeLink);
 
 if (__DEV__) {
   /** Test-only hook: detaches the debugger and runs the same handler Chrome's onDetach event uses. */

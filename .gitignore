@@ -5,3 +5,4 @@
 /.superpowers/
 node_modules/
 apps/extension/dist/
+apps/webop/dist/

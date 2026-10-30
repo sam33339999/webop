@@ -1,5 +1,7 @@
 import { siteOf } from "@webop/core/domain";
 
+const PROFILE_KEY = "webop.profile_id";
+
 const ALLOW_KEY = "webop.allow";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -11,6 +13,8 @@ function normalize(line: string): string | null {
 
 async function init(): Promise<void> {
   $("ext-id").textContent = chrome.runtime.id;
+  const profile = (await chrome.storage.local.get(PROFILE_KEY))[PROFILE_KEY];
+  $("profile-id").textContent = typeof profile === "string" ? profile : "(not registered yet)";
   const area = $<HTMLTextAreaElement>("allow");
   const stored = (await chrome.storage.local.get(ALLOW_KEY))[ALLOW_KEY];
   area.value = Array.isArray(stored) ? stored.join("\n") : "";
