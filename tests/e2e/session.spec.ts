@@ -217,3 +217,64 @@ test("tabs_create that redirects to a denied site closes the tab", async () => {
   assert.deepEqual(JSON.parse(textOf(await call(sw, "tabs_list", {}))), []);
   assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.filter((t) => (t.url ?? "").includes("127.0.0.1") || (t.pendingUrl ?? "").includes("127.0.0.1")).length)), 0);
 });
+
+test("concurrent screenshots on one tab are serialized (hide/capture/unhide never interleave)", async () => {
+  const { sw, baseUrl } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  await sw.evaluate(() => { (globalThis as any).__webop.hiderLog.length = 0; });
+  const results = await Promise.all([1, 2, 3].map(() => call(sw, "computer", { action: "screenshot", tab_id })));
+  for (const r of results) assert.ok("content" in r, "error" in r ? r.error.message : "");
+  const log: Array<{ hidden?: boolean; at?: string }> = await sw.evaluate(() => JSON.parse(JSON.stringify((globalThis as any).__webop.hiderLog)));
+  const one = ["hidden:true", "before", "after", "hidden:false"];
+  assert.deepEqual(log.map((e) => e.hidden === undefined ? e.at : `hidden:${e.hidden}`), [...one, ...one, ...one]);
+});
+
+async function canAttach(sw: Worker, tab_id: number): Promise<boolean> {
+  return sw.evaluate(async (id) => {
+    try { await chrome.debugger.attach({ tabId: id }, "1.3"); } catch { return false; }
+    await chrome.debugger.detach({ tabId: id });
+    return true;
+  }, tab_id);
+}
+
+test("session closed during an in-flight screenshot: no debugger left behind, later calls fail", async () => {
+  const { sw, baseUrl } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  await sw.evaluate(() => { (globalThis as any).__webop.hiderLog.length = 0; });
+  // Start the screenshot, and close the session as soon as it has begun hiding the overlay (i.e. after attaching).
+  const inflight = call(sw, "computer", { action: "screenshot", tab_id });
+  await sw.evaluate(async () => {
+    const w = (globalThis as any).__webop;
+    for (let i = 0; i < 500 && w.hiderLog.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
+    await w.closeSession("test");
+  });
+  const r = await inflight;
+  assert.equal(errOf(r).code, "tab_not_in_session");
+  assert.match(errOf(r).message, /closed/);
+  assert.equal(await canAttach(sw, tab_id), true, "debugger still attached after close");
+  // The closed id is not resurrected by a later call.
+  for (const [tool, args] of [["computer", { action: "screenshot", tab_id }], ["read_page", { tab_id }], ["tabs_list", {}], ["tabs_create", { url: `${baseUrl}/form.html` }]] as const) {
+    const e = errOf(await call(sw, tool, args));
+    assert.equal(e.code, "tab_not_in_session", tool);
+    assert.match(e.message, /closed/, tool);
+  }
+  assert.equal(await canAttach(sw, tab_id), true, "debugger attached by a call after close");
+});
+
+test("closing a session hides the cursor and glow on its tabs", async () => {
+  const { sw, baseUrl, context } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  const page = context.pages().find((p) => p.url() === `${baseUrl}/button.html`);
+  assert.ok(page);
+  const state = () => sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
+  await call(sw, "computer", { action: "screenshot", tab_id });
+  const vp = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }));
+  // Any click moves the phantom cursor in; the coordinate is in screenshot space, which the context maps back.
+  const hovered = await call(sw, "computer", { action: "hover", tab_id, coordinate: [Math.floor(vp.w / 4), Math.floor(vp.h / 4)] });
+  assert.ok("content" in hovered, "error" in hovered ? hovered.error.message : "");
+  assert.equal((await state()).cursorOpacity, "1");
+  await sw.evaluate(() => (globalThis as any).__webop.closeSession("test"));
+  const after = await state();
+  assert.equal(after.cursorOpacity, "0");
+  assert.equal(after.glowOpacity, "0");
+});

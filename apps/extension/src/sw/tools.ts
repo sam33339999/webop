@@ -3,7 +3,7 @@ import { CdpError, send } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertOwned, createTab, listTabs, openSession } from "./sessions.ts";
+import { assertLive, assertOwned, createTab, ensureSession, listTabs } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { checkSite, isSiteAllowed } from "./permissions.ts";
 
@@ -78,8 +78,23 @@ async function targetArg(tabId: number, args: Record<string, unknown>, coordName
   return toViewportPoint(tabId, pointArg(args, coordName));
 }
 
+/** Input must never reach a frame we cannot attribute to the tab's own site (e.g. an embedded login or payment widget). */
+async function assertNotCrossSiteFrame(tabId: number, point?: [number, number]): Promise<void> {
+  const r = await askContent<{ ok: true } | { ok: false; src: string } | undefined>(tabId, { type: "webop:frame_check", x: point?.[0], y: point?.[1] });
+  if (!r) throw new CdpError("internal", "Page content script returned no reply.");
+  if (r.ok) return;
+  const site = r.src ? siteOf(r.src) : null;
+  throw new CdpError("permission_denied", `target is inside a cross-site frame (${site ?? "unknown"}); webop only acts on the tab's own site.`);
+}
+
+async function guardedTarget(tabId: number, args: Record<string, unknown>, coordName: string, refName: string): Promise<[number, number]> {
+  const point = await targetArg(tabId, args, coordName, refName);
+  await assertNotCrossSiteFrame(tabId, point);
+  return point;
+}
+
 async function perform(action: string, tabId: number, args: Record<string, unknown>): Promise<void> {
-  const target = () => targetArg(tabId, args, "coordinate", "ref");
+  const target = () => guardedTarget(tabId, args, "coordinate", "ref");
   switch (action) {
     case "left_click": return click(tabId, ...(await target()));
     case "right_click": return click(tabId, ...(await target()), { button: "right" });
@@ -91,14 +106,20 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
       return;
     }
     case "left_click_drag": {
-      const from = await targetArg(tabId, args, "start_coordinate", "start_ref");
+      const from = await guardedTarget(tabId, args, "start_coordinate", "start_ref");
       const to = await target();
       return drag(tabId, from, to);
     }
-    case "type": return typeText(tabId, textArg(args));
+    case "type": {
+      const text = textArg(args);
+      await assertNotCrossSiteFrame(tabId);
+      return typeText(tabId, text);
+    }
     case "key": {
+      const combo = textArg(args);
+      await assertNotCrossSiteFrame(tabId);
       try {
-        return await pressKeys(tabId, textArg(args));
+        return await pressKeys(tabId, combo);
       } catch (e) {
         if (e instanceof CdpError) throw e;
         invalid(e instanceof Error ? e.message : String(e));
@@ -219,8 +240,26 @@ async function navigate(session_id: string, args: Record<string, unknown>): Prom
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
+const tabQueues = new Map<number, Promise<void>>();
+
+/** Runs `fn` after every earlier call on the same tab has finished (FIFO), so overlay hiding, captures and input sequences never interleave. */
+async function withTab<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
+  const prev = tabQueues.get(tabId) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = prev.then(() => mine);
+  tabQueues.set(tabId, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (tabQueues.get(tabId) === tail) tabQueues.delete(tabId);
+  }
+}
+
 async function run(call: ToolCall): Promise<Outcome> {
-  await openSession(call.session_id, call.session_id);
+  await ensureSession(call.session_id);
   if (call.tool === "tabs_list") {
     // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
     const tabs = await Promise.all((await listTabs(call.session_id)).map(async (t) =>
@@ -243,43 +282,57 @@ async function run(call: ToolCall): Promise<Outcome> {
   }
   if (call.tool === "tabs_close") {
     const tabId = tabIdOf(call.args);
-    await assertOwned(call.session_id, tabId);
-    await chrome.tabs.remove(tabId);
-    return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
+    return withTab(tabId, async () => {
+      await assertOwned(call.session_id, tabId);
+      await chrome.tabs.remove(tabId);
+      return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
+    });
   }
-  if (call.tool === "navigate") return navigate(call.session_id, call.args);
+  if (call.tool === "navigate") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, () => navigate(call.session_id, call.args));
+  }
   if (call.tool === "computer") {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
-    await authorize(call.session_id, tabId);
-    const performed = action !== "screenshot";
-    if (performed) {
-      await perform(action, tabId, call.args);
-      await settle(tabId);
-    }
-    await recheck(tabId, performed);
-    const { block } = await screenshot(tabId);
-    await recheck(tabId, performed);
-    return { content: [block] };
+    return withTab(tabId, async () => {
+      await authorize(call.session_id, tabId);
+      const performed = action !== "screenshot";
+      if (performed) {
+        await perform(action, tabId, call.args);
+        await settle(tabId);
+      }
+      await assertLive(call.session_id);
+      await recheck(tabId, performed);
+      const { block } = await screenshot(tabId);
+      await recheck(tabId, performed);
+      return { content: [block] };
+    });
   }
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
-    await authorize(call.session_id, tabId);
-    const { filter, ref_id, max_chars } = call.args;
-    if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
-    if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");
-    if (max_chars !== undefined && (typeof max_chars !== "number" || !Number.isFinite(max_chars) || max_chars <= 0)) invalid("max_chars must be a positive number.");
-    const key = `webop.refBase.${tabId}`;
-    const stored = (await chrome.storage.session.get(key))[key];
-    const ref_base = typeof stored === "number" ? stored : 0;
-    const r = await askContent<{ text: string; counter: number } | { error: "stale_ref" } | undefined>(tabId, { type: "webop:read_page", filter, ref_id, max_chars: max_chars ?? 50000, ref_base });
-    if (!r) throw new CdpError("internal", "Page content script returned no reply.");
-    if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
-    await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
-    await recheck(tabId, false);
-    return { content: [{ type: "text", text: r.text }] };
+    return withTab(tabId, () => readPage(call));
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
+}
+
+async function readPage(call: ToolCall): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  await authorize(call.session_id, tabId);
+  const { filter, ref_id, max_chars } = call.args;
+  if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
+  if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");
+  if (max_chars !== undefined && (typeof max_chars !== "number" || !Number.isFinite(max_chars) || max_chars <= 0)) invalid("max_chars must be a positive number.");
+  const key = `webop.refBase.${tabId}`;
+  const stored = (await chrome.storage.session.get(key))[key];
+  const ref_base = typeof stored === "number" ? stored : 0;
+  const r = await askContent<{ text: string; counter: number } | { error: "stale_ref" } | undefined>(tabId, { type: "webop:read_page", filter, ref_id, max_chars: max_chars ?? 50000, ref_base });
+  if (!r) throw new CdpError("internal", "Page content script returned no reply.");
+  if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
+  await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
+  await assertLive(call.session_id);
+  await recheck(tabId, false);
+  return { content: [{ type: "text", text: r.text }] };
 }
 
 export async function dispatch(call: ToolCall): Promise<ToolResult> {

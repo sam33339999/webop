@@ -1,6 +1,6 @@
 import type { ExtToHost, HostToExt } from "@webop/core/protocol";
 import { dispatch } from "./tools.ts";
-import { closeSession, openSession } from "./sessions.ts";
+import { closeHostSessions, closeSession, openSession } from "./sessions.ts";
 
 const HOST = "com.webop.native_host";
 const PROFILE_KEY = "webop.profile_id";
@@ -46,6 +46,8 @@ async function connect(): Promise<void> {
   let p: chrome.runtime.Port;
   try {
     const id = await profileId();
+    // Sessions that outlived their host connection (e.g. the SW was restarted) are stale.
+    await closeHostSessions();
     p = chrome.runtime.connectNative(HOST);
     port = p;
     p.onMessage.addListener((m: HostToExt) => {
@@ -54,6 +56,8 @@ async function connect(): Promise<void> {
     p.onDisconnect.addListener(() => {
       void chrome.runtime.lastError; // read so Chrome does not log "unchecked lastError"
       if (port === p) port = undefined;
+      // Sessions are per host connection: nobody can drive or close them any more, so release the tabs.
+      closeHostSessions().catch((e) => console.warn("webop closing host sessions failed", e));
       // A host that dies right after launch (not installed, crashing) must keep backing off; only a link that stayed up counts as connected.
       if (Date.now() - connectedAt >= STABLE_MS) attempts = 0;
       scheduleReconnect();

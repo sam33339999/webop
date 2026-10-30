@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -112,4 +112,30 @@ test("extension loaded before `webop install`: opening the options page connects
   const client = await mcpClient(h.root);
   const r = await client.callTool({ name: "browser_tabs_list", arguments: {} });
   assert.ok(!r.isError, textOf(r));
+});
+
+test("host connection lost: the extension releases the session's tabs", async () => {
+  const { h, client } = await chain();
+  const created = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${h.baseUrl}/button.html` } });
+  const tab_id = JSON.parse(textOf(created)).tab_id as number;
+  const shot = await client.callTool({ name: "browser_computer", arguments: { action: "screenshot", tab_id } });
+  assert.ok(!shot.isError, textOf(shot));
+  const canAttach = () => h.sw.evaluate(async (id) => {
+    try { await chrome.debugger.attach({ tabId: id }, "1.3"); } catch { return false; }
+    await chrome.debugger.detach({ tabId: id });
+    return true;
+  }, tab_id);
+  assert.equal(await canAttach(), false, "debugger should be attached while the session is live");
+  // Kill the native host process: Chrome sees the port disconnect, with the MCP client's session still open.
+  const run = join(h.root, "run");
+  const desc = JSON.parse(readFileSync(join(run, readdirSync(run).find((n) => n.endsWith(".json")) as string), "utf8"));
+  assert.equal(typeof desc.pid, "number");
+  process.kill(desc.pid, "SIGKILL");
+  let released = false;
+  for (let i = 0; i < 50 && !released; i++) {
+    await sleep(100);
+    released = await canAttach();
+  }
+  assert.ok(released, "debugger still attached after the host connection dropped");
+  assert.equal(await h.sw.evaluate((id) => chrome.tabs.get(id).then(() => true, () => false), tab_id), true);
 });

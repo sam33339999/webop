@@ -20,6 +20,17 @@ const detachWaiters = new Map<number, Set<() => void>>();
 const CANCEL_GRACE_MS = 100;
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
+let mayControl: (tabId: number) => boolean = () => true;
+
+/** Registers the check that stops a closed session's in-flight work from re-attaching to its former tabs. */
+export function setTabGuard(fn: (tabId: number) => boolean): void {
+  mayControl = fn;
+}
+
+function sessionClosed(): CdpError {
+  return new CdpError("tab_not_in_session", "Session closed; this tab is no longer controlled by the session.");
+}
+
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
   detachListeners.push(cb);
 }
@@ -81,6 +92,7 @@ async function doAttach(tabId: number): Promise<void> {
 }
 
 export async function attach(tabId: number): Promise<void> {
+  if (!mayControl(tabId)) throw sessionClosed();
   if (attached.has(tabId)) return;
   let inflight = attaching.get(tabId);
   if (!inflight) {
@@ -88,6 +100,11 @@ export async function attach(tabId: number): Promise<void> {
     attaching.set(tabId, inflight);
   }
   await inflight;
+  // The session may have been closed while the attach was in flight; never leave a debugger behind.
+  if (!mayControl(tabId)) {
+    await detach(tabId);
+    throw sessionClosed();
+  }
 }
 
 function waitForDetach(tabId: number, timeoutMs: number): Promise<void> {
@@ -122,6 +139,7 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted]);
   } catch (e) {
     if (e instanceof CdpError) throw e;
+    if (!mayControl(tabId)) throw sessionClosed();
     // Chrome may reject the in-flight command before onDetach(canceled_by_user) fires, so give the event a moment.
     if (!canceledSince()) await waitForDetach(tabId, CANCEL_GRACE_MS);
     if (canceledSince()) {
