@@ -22,3 +22,13 @@ test("planCapture dpr2 small viewport halves to css size", () => {
   assert.equal(p.outWidth, 800);
   assert.equal(p.clipScale, 1);
 });
+test("planCapture extreme aspect stays within budget", () => {
+  const p = planCapture(90, 2000, 1);
+  assert.ok(Math.max(p.outWidth, p.outHeight) <= 1568 && tokens(p.outWidth, p.outHeight) <= 1568);
+});
+test("planCapture grid stays within budget", () => {
+  for (const w of [90, 200, 500]) for (const h of [2000, 5000, 8000]) for (const dpr of [1, 2]) {
+    const p = planCapture(w, h, dpr);
+    assert.ok(Math.max(p.outWidth, p.outHeight) <= 1568 && tokens(p.outWidth, p.outHeight) <= 1568, `${w}x${h}@${dpr}`);
+  }
+});

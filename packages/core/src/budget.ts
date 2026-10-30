@@ -39,7 +39,15 @@ export function planCapture(
 ): { clipScale: number; outWidth: number; outHeight: number } {
   const s = Math.round(viewportW * dpr);
   const e = Math.round(viewportH * dpr);
-  const [m] = fitBudget(s, e, b);
-  const clipScale = Math.min(1, m / s);
-  return { clipScale, outWidth: Math.round(s * clipScale), outHeight: Math.round(e * clipScale) };
+  const [m, n] = fitBudget(s, e, b);
+  let clipScale = Math.min(1, Math.max(m, n) / Math.max(s, e));
+  const out = (k: number): [number, number] => [Math.max(1, Math.round(s * k)), Math.max(1, Math.round(e * k))];
+  // Rounding can push the output just past the budget; shrink until it fits.
+  for (let i = 0; i < 1000; i++) {
+    const [w, h] = out(clipScale);
+    if (fits(w, h, b)) break;
+    clipScale *= 0.999;
+  }
+  const [outWidth, outHeight] = out(clipScale);
+  return { clipScale, outWidth, outHeight };
 }
