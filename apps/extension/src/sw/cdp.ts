@@ -132,3 +132,10 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     set.delete(abort);
   }
 }
+
+/** Releases our debugger attachment on a tab (the tab itself is untouched) and clears the bookkeeping. */
+export async function detach(tabId: number): Promise<void> {
+  await chrome.debugger.detach({ tabId }).catch(() => {});
+  attached.delete(tabId);
+  lastDetach.delete(tabId);
+}

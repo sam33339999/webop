@@ -1,8 +1,10 @@
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError } from "./cdp.ts";
+import { CdpError, send } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
+import { assertOwned, createTab, listTabs, openSession } from "./sessions.ts";
+import { checkSite, isSiteAllowed } from "./permissions.ts";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -115,10 +117,118 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
   }
 }
 
+const NAVIGATE_TIMEOUT_MS = 30000;
+
+/** Resolves once the tab has finished loading what `start` kicked off; rejects with `timeout` after 30 s. */
+async function afterLoad(tabId: number, start: () => Promise<unknown>): Promise<void> {
+  let sawLoading = false;
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => { finish = resolve; });
+  const onUpdated = (id: number, info: { status?: string }) => {
+    if (id !== tabId) return;
+    if (info.status === "loading") sawLoading = true;
+    if (info.status === "complete" && sawLoading) finish();
+  };
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  const startedAt = Date.now();
+  // Same-document navigations never emit "loading"; fall back to the tab's own status after a short grace period.
+  const poll = setInterval(() => {
+    if (!sawLoading && Date.now() - startedAt < 500) return;
+    chrome.tabs.get(tabId).then((t) => { if (t.status === "complete") finish(); }, finish);
+  }, 100);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new CdpError("timeout", `Page did not finish loading within ${NAVIGATE_TIMEOUT_MS / 1000}s.`)), NAVIGATE_TIMEOUT_MS);
+  });
+  try {
+    await start();
+    await Promise.race([done, timeout]);
+  } finally {
+    clearTimeout(timer);
+    clearInterval(poll);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
+  }
+}
+
+async function currentUrl(tabId: number): Promise<string> {
+  try {
+    return (await chrome.tabs.get(tabId)).url ?? "";
+  } catch {
+    throw new CdpError("tab_not_in_session", `Tab ${tabId} does not exist.`);
+  }
+}
+
+/** Ownership and allowlist gate for every tool that touches page content; runs before anything is read or sent. */
+async function authorize(session_id: string, tabId: number): Promise<void> {
+  await assertOwned(session_id, tabId);
+  await checkSite(await currentUrl(tabId));
+}
+
+function urlArg(args: Record<string, unknown>): string {
+  if (typeof args.url !== "string" || args.url === "") invalid("url must be a non-empty string.");
+  return args.url;
+}
+
+/** chrome.tabs.goBack skips entries the user never interacted with; fall back to the exact history entry via CDP. */
+async function goHistory(tabId: number, dir: "back" | "forward"): Promise<void> {
+  try {
+    await (dir === "back" ? chrome.tabs.goBack(tabId) : chrome.tabs.goForward(tabId));
+    return;
+  } catch {
+    // fall through
+  }
+  const h = await send<{ currentIndex: number; entries: { id: number }[] }>(tabId, "Page.getNavigationHistory");
+  const entry = h.entries[h.currentIndex + (dir === "back" ? -1 : 1)];
+  if (!entry) throw new CdpError("invalid_args", `Cannot go ${dir}: no such history entry.`);
+  await send(tabId, "Page.navigateToHistoryEntry", { entryId: entry.id });
+}
+
+async function navigate(session_id: string, args: Record<string, unknown>): Promise<Outcome> {
+  const tabId = tabIdOf(args);
+  const target = urlArg(args);
+  await assertOwned(session_id, tabId);
+  const history = target === "back" || target === "forward";
+  if (!history) await checkSite(target);
+  await afterLoad(tabId, async () => {
+    if (!history) {
+      await chrome.tabs.update(tabId, { url: target });
+    } else {
+      await goHistory(tabId, target);
+    }
+  });
+  const final = await currentUrl(tabId);
+  await checkSite(final);
+  return { content: [{ type: "text", text: `Navigated to ${final}` }] };
+}
+
 async function run(call: ToolCall): Promise<Outcome> {
+  await openSession(call.session_id, call.session_id);
+  if (call.tool === "tabs_list") {
+    // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
+    const tabs = await Promise.all((await listTabs(call.session_id)).map(async (t) =>
+      (await isSiteAllowed(t.url)) ? t : { tab_id: t.tab_id, title: "", url: "(site not allowed)" }));
+    return { content: [{ type: "text", text: JSON.stringify(tabs) }] };
+  }
+  if (call.tool === "tabs_create") {
+    const url = urlArg(call.args);
+    await checkSite(url);
+    const tab = await createTab(call.session_id, url);
+    const tab_id = tab.id as number;
+    await afterLoad(tab_id, async () => {});
+    await checkSite(await currentUrl(tab_id));
+    return { content: [{ type: "text", text: JSON.stringify({ tab_id, url: await currentUrl(tab_id) }) }] };
+  }
+  if (call.tool === "tabs_close") {
+    const tabId = tabIdOf(call.args);
+    await assertOwned(call.session_id, tabId);
+    await chrome.tabs.remove(tabId);
+    return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
+  }
+  if (call.tool === "navigate") return navigate(call.session_id, call.args);
   if (call.tool === "computer") {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
+    await authorize(call.session_id, tabId);
     if (action === "screenshot") {
       const { block } = await screenshot(tabId);
       return { content: [block] };
@@ -129,6 +239,7 @@ async function run(call: ToolCall): Promise<Outcome> {
   }
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
+    await authorize(call.session_id, tabId);
     const { filter, ref_id, max_chars } = call.args;
     if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
     if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");

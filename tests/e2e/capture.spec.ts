@@ -51,12 +51,12 @@ for (const dpr of [1, 2]) {
   });
 }
 
-test("chrome:// is protected_page", async () => {
+test("chrome:// is denied by the allowlist before CDP is touched", async () => {
   const { sw } = await open();
   const tab_id = await openTab(sw, "chrome://version");
   const r = await call(sw, "computer", { action: "screenshot", tab_id });
   assert.ok("error" in r);
-  assert.equal(r.error.code, "protected_page");
+  assert.equal(r.error.code, "permission_denied");
 });
 
 test("debugger detach by user -> detached_by_user, then reattach", async () => {

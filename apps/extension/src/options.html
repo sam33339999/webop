@@ -1,3 +1,11 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>webop</title></head>
-<body><div id="app"></div><script src="options.js"></script></body></html>
+<html><head><meta charset="utf-8"><title>webop options</title>
+<style>body{font:14px system-ui;margin:24px;max-width:560px}textarea{width:100%;height:12em;font:13px ui-monospace,monospace}#status{margin-left:8px;color:#555}</style></head>
+<body>
+<h1>webop</h1>
+<p>Extension ID: <code id="ext-id"></code></p>
+<h2>Allowed sites</h2>
+<p>One site per line (for example <code>example.com</code>). The agent can only read or act on these sites.</p>
+<textarea id="allow" spellcheck="false"></textarea>
+<p><button id="save">Save</button><span id="status"></span></p>
+<script src="options.js"></script></body></html>

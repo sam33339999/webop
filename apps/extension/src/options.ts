@@ -1,1 +1,27 @@
-export {};
+import { siteOf } from "@webop/core/domain";
+
+const ALLOW_KEY = "webop.allow";
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** "example.com", "https://www.example.com/x" or "localhost" -> the site key the allowlist stores. */
+function normalize(line: string): string | null {
+  const site = siteOf(line.includes("://") ? line : `https://${line}`);
+  return site ? site.toLowerCase() : null;
+}
+
+async function init(): Promise<void> {
+  $("ext-id").textContent = chrome.runtime.id;
+  const area = $<HTMLTextAreaElement>("allow");
+  const stored = (await chrome.storage.local.get(ALLOW_KEY))[ALLOW_KEY];
+  area.value = Array.isArray(stored) ? stored.join("\n") : "";
+  $("save").addEventListener("click", async () => {
+    const lines = area.value.split("\n").map((l) => l.trim()).filter(Boolean);
+    const sites = [...new Set(lines.map(normalize).filter((s): s is string => s !== null))];
+    const rejected = lines.length - lines.map(normalize).filter((s) => s !== null).length;
+    await chrome.storage.local.set({ [ALLOW_KEY]: sites });
+    area.value = sites.join("\n");
+    $("status").textContent = rejected > 0 ? `Saved; ignored ${rejected} invalid line(s).` : "Saved.";
+  });
+}
+
+void init();

@@ -54,8 +54,15 @@ export function call(sw: Worker, tool: ToolName, args: object, session_id = "tes
   );
 }
 
-/** Opens `url` in a new tab via the extension APIs and returns the tab id. */
-export async function openTab(sw: Worker, url: string): Promise<number> {
+/** Opens `url` in a new tab via the extension APIs, hands it to `session_id`, and returns the tab id. */
+export async function openTab(sw: Worker, url: string, session_id = "test"): Promise<number> {
+  const tabId = await openForeignTab(sw, url);
+  await sw.evaluate(([s, id]) => (globalThis as any).__webop.adoptTab(s, id), [session_id, tabId] as const);
+  return tabId;
+}
+
+/** Opens a tab the session does NOT own (as if the user opened it). */
+export async function openForeignTab(sw: Worker, url: string): Promise<number> {
   return sw.evaluate(async (u) => {
     const tab = await chrome.tabs.create({ url: u, active: true });
     if (tab.id === undefined) throw new Error("no tab id");

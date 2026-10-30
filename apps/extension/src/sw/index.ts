@@ -1,6 +1,7 @@
 import { handleDetach, send } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
+import { adoptTab, closeSession } from "./sessions.ts";
 
 const HIDER_TIMEOUT_MS = 200;
 
@@ -21,5 +22,5 @@ if (__DEV__) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     handleDetach(tabId, reason);
   };
-  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog };
+  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog, adoptTab, closeSession };
 }
