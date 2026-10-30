@@ -9,7 +9,7 @@ import type { ToolName, ToolResult } from "@webop/core/protocol";
 import { startServer } from "./fixtures/server.ts";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const dist = join(repo, "apps/extension/dist");
+const dist = join(repo, "apps/extension/dist-dev");
 export const webopBin = join(repo, "apps/webop/dist/webop.mjs");
 
 export interface Launched {
