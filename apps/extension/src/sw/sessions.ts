@@ -1,3 +1,4 @@
+import { cancelAll, cancelSession } from "./callctx.ts";
 import { ensureInjected } from "./inject.ts";
 import { CdpError, detach, setTabGuard } from "./cdp.ts";
 import { revokeSessionGrants } from "./permissions.ts";
@@ -109,11 +110,13 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
 
 /** Detaches the debugger from the session's tabs, hides its overlay and forgets the session; the tabs stay open. */
 export async function closeSession(session_id: string): Promise<void> {
+  cancelSession(session_id);
   await endSessions((id) => id === session_id, [session_id]);
 }
 
 /** Sessions belong to one host connection; when that connection ends (or a new one starts) they all go. */
 export async function closeHostSessions(): Promise<void> {
+  cancelAll();
   await endSessions((_id, st) => st.host);
 }
 

@@ -9,6 +9,8 @@ import { readLines, writeLine } from "./ndjson.ts";
 import { logDir, runDir, socketPath } from "./paths.ts";
 import { TOOL_DEFS } from "./tool-schemas.ts";
 
+const MAX_EXTEND_MS = 600_000;
+
 type Outcome = { content: ContentBlock[] } | { error: { code: ErrorCode; message: string } };
 const fail = (code: ErrorCode, message: string): Outcome => ({ error: { code, message } });
 
@@ -164,8 +166,10 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
   }
 
   async function forward(tool: ToolName, args: Record<string, unknown>, signal?: AbortSignal): Promise<Outcome> {
+    if (signal?.aborted) return fail("internal", "Tool call was cancelled by the client");
     const c = await getConn();
     if (!("sock" in c)) return c;
+    if (signal?.aborted) return fail("internal", "Tool call was cancelled by the client");
     const id = String(nextId++);
     return new Promise<Outcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout>;
@@ -180,9 +184,10 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
         writeLine(c.sock, { type: "cancel", id } satisfies McpToHost);
         resolve(o);
       };
+      const startedAt = Date.now();
       const arm = (ms: number): void => {
         clearTimeout(timer);
-        timer = setTimeout(() => giveUp(fail("timeout", `Tool call timed out after ${callTimeoutMs} ms`)), ms);
+        timer = setTimeout(() => giveUp(fail("timeout", `Tool call timed out after ${Date.now() - startedAt} ms`)), ms);
       };
       const onAbort = (): void => giveUp(fail("internal", "Tool call was cancelled by the client"));
       arm(callTimeoutMs);
@@ -190,10 +195,9 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
         cleanup();
         resolve(o);
       });
-      c.extend.set(id, (ms) => arm(ms + callTimeoutMs));
+      c.extend.set(id, (ms) => arm(Math.min(ms, MAX_EXTEND_MS) + callTimeoutMs));
       signal?.addEventListener("abort", onAbort, { once: true });
       writeLine(c.sock, { type: "call", id, tool, args } satisfies McpToHost);
-      if (signal?.aborted) onAbort();
     });
   }
 

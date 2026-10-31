@@ -241,14 +241,48 @@ test("MCP client cancellation sends cancel to the host", async () => {
   host.close();
 });
 
-test("malformed pending is ignored", async () => {
+test("malformed pending is ignored: the original timeout still fires", async () => {
   const root = tmpRoot();
   const host = await fakeHost(root, "p1", "Work", (m, s) => {
-    writeLine(s, { type: "pending", id: m.id, extend_ms: "x" });
-    writeLine(s, { type: "pending", id: m.id, extend_ms: -1 });
-    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] });
+    for (const bad of ["x", -1, 0, 1.5, null]) writeLine(s, { type: "pending", id: m.id, extend_ms: bad });
+    setTimeout(() => writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "late" }] }), 400);
   });
-  const client = await connectClient({ root });
-  assert.equal(text((await client.callTool({ name: "browser_tabs_list", arguments: {} })) as any), "ok");
+  const client = await connectClient({ root, callTimeoutMs: 100 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^timeout:/);
+  host.close();
+});
+
+test("pending for an unknown id is a no-op", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => {
+    writeLine(s, { type: "pending", id: "nope", extend_ms: 5000 });
+    setTimeout(() => writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "late" }] }), 400);
+  });
+  const client = await connectClient({ root, callTimeoutMs: 100 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^timeout:/);
+  host.close();
+});
+
+test("already-aborted client signal sends no call", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", () => {});
+  const client = await connectClient({ root, callTimeoutMs: 5000 });
+  const ac = new AbortController();
+  ac.abort();
+  await client.callTool({ name: "browser_tabs_list", arguments: {} }, undefined, { signal: ac.signal }).catch(() => {});
+  await sleep(100);
+  assert.equal(host.seen.filter((m) => m.type === "call").length, 0);
+  host.close();
+});
+
+test("timeout message reports the total waited after an extension", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => setTimeout(() => writeLine(s, { type: "pending", id: m.id, extend_ms: 200 }), 50));
+  const client = await connectClient({ root, callTimeoutMs: 100 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  const ms = Number(/after (\d+) ms/.exec(text(r))?.[1]);
+  assert.ok(ms >= 300, text(r));
   host.close();
 });

@@ -134,18 +134,69 @@ test("t_pending_notice: a gated call posts tool_pending with askMs + 10 s, then 
   assert.deepEqual(sent, [{ type: "tool_pending", id: "c1", session_id: "s1", extend_ms: 70_000 }]);
 });
 
-test("t_answer_after_cancel_noop: tool_cancel during the prompt closes the popup, denies, and nothing happens on the page", async () => {
-  const h = await open();
-  const tabId = await openTab(h.sw, `${h.baseUrl}/button.html`);
-  const done = h.sw.evaluate((r) => (globalThis as any).__webop.askInCall("s1", "c2", r), askReq);
-  await waitFor(() => promptPages(h)[0], "prompt window");
-  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
-  const r = await done as { answer: string };
-  assert.equal(r.answer, "deny");
-  await waitFor(() => promptPages(h).length === 0, "popup closed after tool_cancel");
-  // A late cancel for a finished call is a no-op.
-  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
+/** Starts a gated-style call (ask, then a click on the page only if allowed) and returns its promise. */
+async function btnCoord(h: Launched, tabId: number): Promise<[number, number]> {
+  await call(h.sw, "computer", { action: "screenshot", tab_id: tabId }, "s1");
   const page = h.context.pages().find((p) => p.url().includes("button.html"))!;
-  assert.equal(await page.title(), "button");
-  assert.ok(tabId > 0);
+  const r = await page.evaluate(() => { const b = document.querySelector("#btn")!.getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; });
+  const ctx = await h.sw.evaluate((id) => (globalThis as any).__webop.getContext(id), tabId);
+  return [(r.x * ctx.screenshotWidth) / ctx.viewportWidth, (r.y * ctx.screenshotHeight) / ctx.viewportHeight];
+}
+
+function gatedClick(h: Launched, id: string, tabId: number, coordinate: [number, number]) {
+  const req = { ...askReq, site: "example.com" };
+  const then = { id, session_id: "s1", tool: "computer", args: { action: "left_click", tab_id: tabId, coordinate } };
+  return h.sw.evaluate(([r, t]) => (globalThis as any).__webop.askInCall("s1", t.id, r, t), [req, then] as const);
+}
+const stored = (h: Launched) => h.sw.evaluate(async () => ({
+  local: (await chrome.storage.local.get("webop.grants"))["webop.grants"],
+  session: (await chrome.storage.session.get("webop.session_grants"))["webop.session_grants"],
+}));
+
+async function assertNothingHappened(h: Launched, done: Promise<unknown>, tabId: number) {
+  const r = await done as { answer: string; result?: unknown };
+  assert.equal(r.answer, "deny");
+  assert.equal(r.result, undefined, "the action must not run");
+  await waitFor(() => promptPages(h).length === 0, "popup closed");
+  const s = await stored(h);
+  assert.equal(JSON.stringify(s).includes("example.com"), false, `no grant may be stored: ${JSON.stringify(s)}`);
+  const title = await h.sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.title), tabId);
+  assert.equal(title, "button", "the page must not have been clicked");
+}
+
+test("t_answer_after_cancel_noop: tool_cancel during the prompt denies; a late 永久允許 changes nothing and the click never happens", async () => {
+  const h = await open();
+  const tabId = await openTab(h.sw, `${h.baseUrl}/button.html`, "s1");
+  const popup = (async () => { const p = await waitFor(() => promptPages(h)[0], "prompt window"); return p; });
+  const done = gatedClick(h, "c2", tabId, await btnCoord(h, tabId));
+  const p = await popup();
+  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
+  // Answering after the cancel: the window is gone or the answer is ignored.
+  await p.getByRole("button", { name: "永久允許" }).click({ timeout: 1000 }).catch(() => {});
+  await assertNothingHappened(h, done, tabId);
+  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
+});
+
+test("t_session_close_aborts_prompt: closing the session denies the pending ask, closes the popup and runs nothing", async () => {
+  const h = await open();
+  const tabId = await openTab(h.sw, `${h.baseUrl}/button.html`, "s1");
+  const done = gatedClick(h, "c3", tabId, await btnCoord(h, tabId));
+  const p = await waitFor(() => promptPages(h)[0], "prompt window");
+  await h.sw.evaluate(() => (globalThis as any).__webop.closeSession("s1"));
+  await p.getByRole("button", { name: "永久允許" }).click({ timeout: 1000 }).catch(() => {});
+  await assertNothingHappened(h, done, tabId);
+});
+
+test("t_click_runs_when_allowed: the same gated flow does click after 本次允許 (control)", async () => {
+  const h = await open();
+  const tabId = await openTab(h.sw, `${h.baseUrl}/button.html`, "s1");
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": { localhost: ["act"] } }));
+  const done = gatedClick(h, "c4", tabId, await btnCoord(h, tabId));
+  const p = await waitFor(() => promptPages(h)[0], "prompt window");
+  await p.getByRole("button", { name: "本次允許" }).click();
+  const r = await done as { answer: string; result?: any };
+  assert.equal(r.answer, "once");
+  assert.ok(r.result && "content" in r.result, JSON.stringify(r.result));
+  const title = await h.sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.title), tabId);
+  assert.equal(title, "clicked:true");
 });

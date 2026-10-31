@@ -50,7 +50,7 @@ if (__DEV__) {
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
   /** Test-only: runs ask() the way a gated tool will (pending notice, abortable by tool_cancel, deadline reset after the answer). */
-  const askInCall = async (session_id: string, id: string, req: Parameters<typeof ask>[0]): Promise<{ answer: string; deadlineResetAfter: boolean }> => {
+  const askInCall = async (session_id: string, id: string, req: Parameters<typeof ask>[0], then?: Parameters<typeof dispatch>[0]): Promise<{ answer: string; deadlineResetAfter: boolean; result?: unknown }> => {
     const { ctx, close } = openCallContext(session_id, id);
     try {
       ctx.notifyPending(promptTimeouts.askMs + PENDING_MARGIN_MS);
@@ -58,7 +58,10 @@ if (__DEV__) {
       const answer = await ask(req, ctx.signal);
       await new Promise((r) => setTimeout(r, 5));
       ctx.resetDeadline();
-      return { answer, deadlineResetAfter: ctx.deadline > before };
+      const deadlineResetAfter = ctx.deadline > before;
+      // Like a gated tool: the action runs only when the user said yes and the call was not abandoned meanwhile.
+      if (then && answer !== "deny" && !ctx.signal.aborted) return { answer, deadlineResetAfter, result: await dispatch(then) };
+      return { answer, deadlineResetAfter };
     } finally {
       close();
     }

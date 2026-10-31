@@ -23,13 +23,14 @@ export function setPendingSink(s: Sink): void {
   sink = s;
 }
 
-const live = new Map<string, AbortController>();
+const live = new Map<string, { ac: AbortController; session_id: string }>();
 const keyOf = (session_id: string, id: string): string => JSON.stringify([session_id, id]);
 
 export function openCallContext(session_id: string, id: string): { ctx: CallContext; close(): void } {
   const ac = new AbortController();
   const key = keyOf(session_id, id);
-  live.set(key, ac);
+  const entry = { ac, session_id };
+  live.set(key, entry);
   const ctx: CallContext = {
     signal: ac.signal,
     deadline: Date.now() + timeouts.callDeadlineMs,
@@ -41,10 +42,20 @@ export function openCallContext(session_id: string, id: string): { ctx: CallCont
       ctx.deadline = Date.now() + timeouts.callDeadlineMs;
     },
   };
-  return { ctx, close: () => { if (live.get(key) === ac) live.delete(key); } };
+  return { ctx, close: () => { if (live.get(key) === entry) live.delete(key); } };
 }
 
 /** Host relayed `tool_cancel`: aborts the matching call. Unknown or finished calls are a no-op. */
 export function cancelCall(session_id: string, id: string): void {
-  live.get(keyOf(session_id, id))?.abort();
+  live.get(keyOf(session_id, id))?.ac.abort();
+}
+
+/** The session ended: every call it still has in flight is abandoned (pending prompts deny, nothing more runs). */
+export function cancelSession(session_id: string): void {
+  for (const e of live.values()) if (e.session_id === session_id) e.ac.abort();
+}
+
+/** The host link ended: nobody is waiting for any call any more. */
+export function cancelAll(): void {
+  for (const e of live.values()) e.ac.abort();
 }
