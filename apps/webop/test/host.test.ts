@@ -211,3 +211,33 @@ test("exit with descriptor pid not ours leaves files untouched", async () => {
   t.input.end(); await t.done;
   assert.equal(fs.existsSync(descriptorPath("p1", t.root)), true);
 });
+
+test("t_oversize_call_rejected: >1 MB tool_call is not forwarded and errors back", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(t.sock));
+  const { c, msgs } = await t.connect();
+  writeLine(c, { type: "open", client_name: "t" });
+  await until(() => msgs.length > 0);
+  writeLine(c, { type: "call", id: "big", tool: "browser_computer", args: { text: "x".repeat(1_100_000) } });
+  await until(() => msgs.some((m) => m.id === "big"));
+  const res = msgs.find((m) => m.id === "big");
+  assert.equal(res.type, "result");
+  assert.equal(res.error.code, "invalid_args");
+  assert.equal(res.error.message, "Tool arguments exceed the 1 MB Native Messaging limit.");
+  await sleep(50);
+  assert.equal(t.fromHost.some((m) => m.type === "tool_call" && m.id === "big"), false);
+  c.destroy(); t.input.end(); await t.done;
+});
+
+test("t_output_epipe_logged: output error is logged, host does not crash", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wh-"));
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const done = runHost({ input, output, root });
+  output.destroy();
+  output.emit("error", new Error("write EPIPE"));
+  const logFile = path.join(root, "log", "host.log");
+  await until(() => fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").includes("EPIPE"));
+  input.end(); await done;
+});

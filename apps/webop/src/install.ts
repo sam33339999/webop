@@ -32,7 +32,10 @@ export function install(o: { browserDir?: string; webopCommand: string[]; extens
   return { manifestPath, wrapperPath };
 }
 
-export function uninstall(o: { browserDir?: string; root?: string }): void {
-  fs.rmSync(manifestFile(o.browserDir), { force: true });
-  fs.rmSync(wrapperFile(o.root), { force: true });
+export function uninstall(o: { browserDir?: string; root?: string }): { manifestPath: string; wrapperPath: string } {
+  const manifestPath = manifestFile(o.browserDir);
+  const wrapperPath = wrapperFile(o.root);
+  fs.rmSync(manifestPath, { force: true });
+  fs.rmSync(wrapperPath, { force: true });
+  return { manifestPath, wrapperPath };
 }
