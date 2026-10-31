@@ -1,0 +1,23 @@
+/** Content scripts are injected only into tabs a session owns; the manifest declares none. */
+
+const SCRIPTS = ["ax.js", "overlay.js"];
+
+/** Injects the AX and overlay scripts into the tab's top frame; both guard against running twice per document. */
+export async function ensureInjected(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: SCRIPTS });
+}
+
+export function isNoReceiver(e: unknown): boolean {
+  return (e instanceof Error ? e.message : String(e)).includes("Receiving end does not exist");
+}
+
+/** Sends to the top-frame content script; if none is there yet, injects once and retries. */
+export async function sendWithInject<T>(tabId: number, msg: object): Promise<T> {
+  try {
+    return await (chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>);
+  } catch (e) {
+    if (!isNoReceiver(e)) throw e;
+    await ensureInjected(tabId);
+    return await (chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>);
+  }
+}

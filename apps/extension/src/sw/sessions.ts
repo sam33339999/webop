@@ -1,3 +1,4 @@
+import { ensureInjected } from "./inject.ts";
 import { CdpError, detach, setTabGuard } from "./cdp.ts";
 
 const COLORS = ["blue", "purple", "cyan", "green", "orange", "pink", "red", "yellow"] as const;
@@ -138,6 +139,8 @@ async function enroll(s: Store, st: SessionState, tabId: number): Promise<void> 
   }
   if (!st.tabIds.includes(tabId)) st.tabIds.push(tabId);
   await persist(s);
+  // Best effort: a still-loading or protected page is covered by the lazy inject-on-first-use and the reload hook below.
+  await ensureInjected(tabId).catch(() => {});
 }
 
 /** Opens a background tab and puts it in the session's tab group. The caller must have checked the URL. */
@@ -186,4 +189,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
     if (changed) await persist(s);
   });
+});
+
+// A reload or navigation drops the injected scripts; put them back so the overlay and refs keep working.
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status !== "complete") return;
+  // Not ownedNow(): that is permissive until the store loads, and a foreign tab must never get our scripts.
+  void locked((s) => Object.values(s.sessions).some((st) => st.tabIds.includes(tabId)))
+    .then((owned) => (owned ? ensureInjected(tabId) : undefined))
+    .catch(() => {});
 });

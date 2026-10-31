@@ -1,3 +1,4 @@
+import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, inputsSentTo, send, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
@@ -50,7 +51,7 @@ async function askContent<T>(tabId: number, msg: object): Promise<T> {
     timer = setTimeout(() => reject(new Error("timeout")), CONTENT_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>, timeout]);
+    return await Promise.race([sendWithInject<T>(tabId, msg), timeout]);
   } catch (e) {
     if (!(await chrome.tabs.get(tabId).then(() => true, () => false))) throw new CdpError("tab_not_in_session", `Tab ${tabId} was closed.`);
     const why = e instanceof Error ? e.message : String(e);

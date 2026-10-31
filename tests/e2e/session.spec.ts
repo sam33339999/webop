@@ -278,3 +278,31 @@ test("closing a session hides the cursor and glow on its tabs", async () => {
   assert.equal(after.cursorOpacity, "0");
   assert.equal(after.glowOpacity, "0");
 });
+
+const overlayHosts = (page: import("@playwright/test").Page) =>
+  page.evaluate(() => [...document.documentElement.children].filter((e) => (e as HTMLElement).style.cssText.includes("2147483646")).length);
+
+test("t_foreign_tab_untouched: user-opened tabs get no overlay host", async () => {
+  const { sw, baseUrl, context } = await open();
+  await openForeignTab(sw, `${baseUrl}/button.html`);
+  const page = context.pages().find((p) => p.url() === `${baseUrl}/button.html`);
+  assert.ok(page);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(await overlayHosts(page), 0);
+});
+
+test("t_owned_tab_after_reload: read_page and ref click work, single overlay host", async () => {
+  const { sw, baseUrl, context } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  const page = context.pages().find((p) => p.url() === `${baseUrl}/button.html`);
+  assert.ok(page);
+  assert.equal(await overlayHosts(page), 1);
+  await page.reload();
+  const tree = textOf(await call(sw, "read_page", { tab_id, filter: "interactive" }));
+  const ref = /\[(ref_\d+)\]/.exec(tree)?.[1];
+  assert.ok(ref, tree);
+  await call(sw, "computer", { action: "screenshot", tab_id });
+  const clicked = await call(sw, "computer", { action: "left_click", tab_id, ref });
+  assert.ok("content" in clicked, "error" in clicked ? clicked.error.message : "");
+  assert.equal(await overlayHosts(page), 1);
+});
