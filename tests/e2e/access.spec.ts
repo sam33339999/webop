@@ -373,3 +373,27 @@ test("t_denied_wording_reflects_cause: javascript switched off is not reported a
   assert.match(msg, /JavaScript.*(disabled|off)/i);
   assert.doesNotMatch(msg, /deny list/);
 });
+
+test("t_history_on_ask_site_not_touched: back/forward from a tab whose current site is not readable -> permission_required, Not performed, history not read", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.altUrl}/button.html`);
+  await h.sw.evaluate(() => {
+    const w = globalThis as any;
+    w.__history = 0;
+    const sendCommand = chrome.debugger.sendCommand.bind(chrome.debugger) as (...a: unknown[]) => unknown;
+    (chrome.debugger as any).sendCommand = (...a: unknown[]) => { if (a[1] === "Page.getNavigationHistory") w.__history++; return sendCommand(...a); };
+  });
+  const e = errOf(await call(h.sw, "navigate", { tab_id, url: "back" }));
+  assert.equal(e.code, "permission_required");
+  assert.match(e.message, /^Not performed/);
+  // (The prompt's own screenshot for the user may attach; the agent's history lookup must not run.)
+  assert.equal(await h.sw.evaluate(() => (globalThis as any).__history), 0, "the history was not read");
+  await popupOf(h);
+});
+
+test("t_unknown_tool_invalid_args: an unknown tool fails closed at dispatch", async () => {
+  const h = await open();
+  const e = errOf(await call(h.sw, "bogus" as never, {}));
+  assert.equal(e.code, "invalid_args");
+  assert.match(e.message, /Unknown tool/);
+});

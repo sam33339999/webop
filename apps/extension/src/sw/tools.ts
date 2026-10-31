@@ -2,14 +2,14 @@ import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, dropDetachNoticeSince, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
-import { getContext, screenshot, withOverlayHidden } from "./capture.ts";
+import { getContext, screenshot, withStopButtonHidden } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { accessState, askInBackground, deniedError, isSiteReadable, requireAccess } from "./permissions.ts";
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
 import { promptTimeouts } from "./prompt.ts";
-import type { Level } from "@webop/core/grants";
+import { levelFor, type Level } from "@webop/core/grants";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -312,11 +312,12 @@ async function historyEntry(tabId: number, dir: "back" | "forward"): Promise<{ i
 /**
  * Re-checks the tab's current site after content was produced; content is withheld unless the session may `read` it.
  * A site that only needs the user's approval answers permission_required and shows the question, so a retry can succeed.
+ * Returns the URL that was checked, so callers report exactly that value and never read the tab again.
  */
-async function recheck(session_id: string, tabId: number, performed: boolean, ctx: CallContext): Promise<void> {
+async function recheck(session_id: string, tabId: number, performed: boolean, ctx: CallContext): Promise<string> {
   const url = await currentUrl(tabId);
   const state = await accessState(session_id, url, "read");
-  if (state === "allow") return;
+  if (state === "allow") return url;
   const site = siteOf(url) ?? "non-web page";
   const lead = performed ? "The action WAS performed, but the" : "The";
   if (state === "deny") {
@@ -342,7 +343,7 @@ async function settle(tabId: number): Promise<void> {
  * Reads never block on a prompt (spec 4.4): a tab that is on a site this session may not read gets permission_required
  * and the question is shown in the background, so a retry can succeed once the user allows it.
  */
-async function requireReadable(session_id: string, tabId: number, ctx: CallContext): Promise<void> {
+async function requireReadable(session_id: string, tabId: number, ctx: CallContext, notPerformed = false): Promise<void> {
   const url = await currentUrl(tabId);
   const state = await accessState(session_id, url, "read");
   if (state === "deny") throw deniedError(url);
@@ -351,9 +352,22 @@ async function requireReadable(session_id: string, tabId: number, ctx: CallConte
     const client_name = await clientNameOf(session_id);
     if (ctx.stopped()) throw stoppedError();
     askInBackground({ session_id, client_name, url, level: "read", tabId });
-    throw new CdpError("permission_required", `The tab is on ${site}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
+    throw new CdpError("permission_required", `${notPerformed ? "Not performed: t" : "T"}he tab is on ${site}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
   }
   assertBeforeDeadline(ctx);
+}
+
+/**
+ * After a navigation or tab creation went out, a stop or cancel no longer means "Not performed": the change happened
+ * (or may still complete), so the error says that instead.
+ */
+function afterStart(e: unknown, ctx: CallContext, lead: string): unknown {
+  if (!(e instanceof CdpError) || e.code === "detached_by_user") return e;
+  if (e.code === "stopped_by_user" || ctx.stopped()) return new CdpError("stopped_by_user", `${lead}: the user pressed stop.`);
+  if (e.code === "timeout" && e.message.startsWith("Not performed: the caller cancelled")) {
+    return new CdpError("timeout", `${lead}: the caller cancelled this call.`);
+  }
+  return e;
 }
 
 async function navigate(session_id: string, args: Record<string, unknown>, ctx: CallContext): Promise<Outcome> {
@@ -361,11 +375,16 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
   const target = urlArg(args);
   await assertOwned(session_id, tabId);
   const history = target === "back" || target === "forward";
+  // Reading the history entry means debugging the tab; a tab whose current site is not readable is not touched at all.
+  if (history) await requireReadable(session_id, tabId, ctx, true);
   const entry = history ? await historyEntry(tabId, target) : undefined;
   await gate(session_id, ctx, entry ? entry.url : target, "read", { tabId, what: "the navigation was not started" });
   void showGlow(session_id, tabId, ctx.stopped);
   // The wait is capped by the call's deadline so the extension answers before the MCP host gives up.
   const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, ctx.deadline - Date.now()));
+  const lead = "The navigation was started and may still complete";
+  let started = false;
+  let final: string;
   try {
     await afterLoad(tabId, async () => {
       if (entry) {
@@ -373,15 +392,16 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
       } else {
         await chrome.tabs.update(tabId, { url: target });
       }
+      started = true;
     }, limit);
+    final = await recheck(session_id, tabId, true, ctx);
   } catch (e) {
+    if (!started) throw e;
     if (e instanceof CdpError && e.code === "timeout" && e.message.startsWith("Page did not finish")) {
-      throw new CdpError("timeout", `The navigation was started and may still complete. ${e.message}`);
+      throw afterStart(new CdpError("timeout", `${lead}. ${e.message}`), ctx, lead);
     }
-    throw e;
+    throw afterStart(e, ctx, lead);
   }
-  await recheck(session_id, tabId, true, ctx);
-  const final = await currentUrl(tabId);
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
@@ -438,23 +458,31 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tab = await createTab(call.session_id, url, () => assertBeforeDeadline(ctx));
     const tab_id = tab.id as number;
     void showGlow(call.session_id, tab_id, ctx.stopped);
-    await afterLoad(tab_id, async () => {});
+    let closed = false;
     try {
-      const landed = await currentUrl(tab_id);
-      const state = await accessState(call.session_id, landed, "read");
-      if (state === "deny") throw deniedError(landed, "The tab was closed");
-      if (state === "ask") {
-        const client_name = await clientNameOf(call.session_id);
-        if (ctx.stopped()) throw stoppedError();
-        askInBackground({ session_id: call.session_id, client_name, url: landed, level: "read" });
-        throw new CdpError("permission_required", `The tab was closed because it ended up on ${siteOf(landed)}, which needs the user's approval. A prompt was shown to the user; after they allow it, retry tabs_create.`);
+      await afterLoad(tab_id, async () => {});
+      let landed: string;
+      try {
+        landed = await currentUrl(tab_id);
+        const state = await accessState(call.session_id, landed, "read");
+        if (state === "deny") throw deniedError(landed, "The tab was closed");
+        if (state === "ask") {
+          const client_name = await clientNameOf(call.session_id);
+          if (ctx.stopped()) throw stoppedError();
+          askInBackground({ session_id: call.session_id, client_name, url: landed, level: "read" });
+          throw new CdpError("permission_required", `The tab was closed because it ended up on ${siteOf(landed)}, which needs the user's approval. A prompt was shown to the user; after they allow it, retry tabs_create.`);
+        }
+        assertBeforeDeadline(ctx);
+      } catch (e) {
+        await chrome.tabs.remove(tab_id).catch(() => {});
+        closed = true;
+        throw e;
       }
-      assertBeforeDeadline(ctx);
+      // The URL that was just checked, not a fresh read.
+      return { content: [{ type: "text", text: JSON.stringify({ tab_id, url: landed }) }] };
     } catch (e) {
-      await chrome.tabs.remove(tab_id).catch(() => {});
-      throw e;
+      throw afterStart(e, ctx, closed ? "The tab was opened and has been closed" : "The tab was opened and is still open");
     }
-    return { content: [{ type: "text", text: JSON.stringify({ tab_id, url: await currentUrl(tab_id) }) }] };
   }
   if (call.tool === "tabs_close") {
     const tabId = tabIdOf(call.args);
@@ -512,7 +540,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
-          await withOverlayHidden(tabId, () => perform(action, tabId, call.args, guard));
+          await withStopButtonHidden(tabId, () => perform(action, tabId, call.args, guard));
           await settle(tabId);
         }
         await assertLive(call.session_id);
@@ -537,7 +565,11 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       } catch (caught) {
         const e = viaStop(caught, ctx);
         // Once input has gone out, a failure no longer means "nothing happened".
-        if (inputsSentTo(tabId) === inputsBefore) throw e;
+        if (inputsSentTo(tabId) === inputsBefore) {
+          // Nothing went out: say so, whatever stopped the action before its first input.
+          if (e instanceof CdpError && !e.message.startsWith("Not performed") && !e.message.includes("WAS performed")) throw new CdpError(e.code, `Not performed: ${e.message}`);
+          throw e;
+        }
         const prefix = "The action may have been partially or fully performed: ";
         const code = e instanceof CdpError ? e.code : "internal";
         const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
@@ -578,11 +610,17 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
   const { ctx, close } = openCallContext(call.session_id, call.id);
   try {
+    // Every tool goes through the grant map first; an unknown one fails closed.
+    try {
+      levelFor(call.tool, typeof call.args?.action === "string" ? call.args.action : undefined);
+    } catch {
+      invalid(`Unknown tool: ${String(call.tool)}`);
+    }
     const outcome = await run(call, ctx);
     // A stop that landed while the call was finishing: the result is not handed back.
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
-      const readOnly = call.tool === "read_page" || call.tool === "tabs_list";
+      const readOnly = call.tool === "read_page" || call.tool === "tabs_list" || (call.tool === "computer" && call.args.action === "screenshot");
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }
     return { ...base, ...outcome };

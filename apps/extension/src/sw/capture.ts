@@ -20,20 +20,23 @@ let hideOverlay: (tabId: number, hidden: boolean) => Promise<void> = async () =>
  */
 export const hiderLog: Array<{ tabId: number; hidden?: boolean; at?: "before" | "after" }> = [];
 
-export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<void>): void {
+let hideStopButton: (tabId: number, hidden: boolean) => Promise<void> = async () => {};
+
+export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<void>, stopButton?: (tabId: number, hidden: boolean) => Promise<void>): void {
   hideOverlay = fn;
+  if (stopButton) hideStopButton = stopButton;
 }
 
 /**
- * Runs `fn` with the overlay (and so the stop button) hidden: the agent's own input must never land on the button.
- * Restored afterwards even when `fn` fails.
+ * Runs `fn` with the stop button hidden: the agent's own input must never land on it. The glow and the phantom cursor
+ * stay visible so the user sees each input as it happens. Restored afterwards even when `fn` fails.
  */
-export async function withOverlayHidden<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
-  await hideOverlay(tabId, true);
+export async function withStopButtonHidden<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
+  await hideStopButton(tabId, true);
   try {
     return await fn();
   } finally {
-    await hideOverlay(tabId, false);
+    await hideStopButton(tabId, false);
   }
 }
 

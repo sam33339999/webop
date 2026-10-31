@@ -132,7 +132,7 @@ test("click inside a cross-site iframe is denied and nothing reaches the frame",
     const r = await call(h.sw, "computer", { action, tab_id, coordinate });
     assert.ok("error" in r, action);
     assert.equal(r.error.code, "permission_denied", action);
-    assert.match(r.error.message, /cross-site frame \(127\.0\.0\.1\)/);
+    assert.match(r.error.message, /^Not performed: .*cross-site frame \(127\.0\.0\.1\)/);
   }
   const drag = await call(h.sw, "computer", { action: "left_click_drag", tab_id, start_coordinate: coordinate, coordinate: [coordinate[0] + 5, coordinate[1]] });
   assert.ok("error" in drag && drag.error.code === "permission_denied");

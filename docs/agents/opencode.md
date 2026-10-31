@@ -43,8 +43,8 @@ node apps/webop/dist/webop.mjs uninstall
 
 授權以網站（eTLD+1）為單位，分三個等級：
 
-- `read`：讀取頁面（`browser_read_page`、截圖、`browser_tabs_list` 顯示分頁網址與標題）。
-- `act`：點擊、輸入、導航、開分頁。`act` 包含 `read`。
+- `read`：讀取頁面（`browser_read_page`、截圖、`browser_tabs_list` 顯示分頁網址與標題），以及導航與開分頁（`browser_navigate`、`browser_tabs_create`，含 back／forward）。只授權 `read` 的網站，agent 仍可導航到該網站或在其上開分頁。
+- `act`：點擊、輸入、按鍵、捲動、拖曳、懸停（`browser_computer` 的 click／type／key／scroll／drag／hover）。`act` 包含 `read`。
 - `javascript`：獨立的等級，不包含在 `act` 內。需要 options 頁的全域開關開啟，**且**該網站另有 `javascript` 授權才會放行。對應的 `browser_javascript` 工具要到 M5 才提供。
 
 共用網域後綴（private suffix，如 `github.io`、`vercel.app`、`blogspot.com`、`amazonaws.com`）是以「每個應用」為單位：授權 `alice.github.io` 不會放行 `evil.github.io`。
@@ -80,7 +80,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 
 - **頁面內的「停止」按鈕**（agent 操作該分頁期間顯示在右下角）：中止該 session 正在執行與排隊中的呼叫（回傳 `stopped_by_user`），並收回「本次允許」的授權（下次操作會重新詢問）。session 仍保持連線，agent 可繼續下一個呼叫。
 - **點工具列上的 webop 圖示**：停止**所有** session，頁面無法阻擋這個操作。圖示上的徽章數字是目前連線中的 session 數。
-- **debugger 資訊列的「取消」**：等同停止該分頁上的 session。該分頁的下一個呼叫會回傳一次 `detached_by_user`，之後自動重新連上。
+- **debugger 資訊列的「取消」**：Chrome 的資訊列是整個擴充功能共用的，按「取消」會中斷 webop 正在偵錯的**所有**分頁，因此每個有已連上分頁的 session 都會被停止（不只是該分頁的 session）。下一個呼叫會回傳一次 `detached_by_user`，之後自動重新連上；但若已有執行中的呼叫回報過這次取消，下一個呼叫就不會再重複回報。
 
 已知限制：頁面腳本可以移除或遮住頁內按鈕（例如頂層 dialog、全螢幕、移除元素）。遇到這種情況請改用工具列圖示或 debugger 資訊列。
 
@@ -138,11 +138,11 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 | `oob` | 座標超出截圖範圍 |
 | `invalid_args` | 參數不合法，包括 viewport 大小自上次截圖後改變（需重新截圖）|
 | `timeout` | 操作逾時（對話框或卡住的腳本通常約 20 秒）。只有訊息含「Not performed」時才保證動作沒有執行；訊息含「may have been partially or fully performed」表示輸入已送出 |
-| `detached_by_user` | 使用者按了 debugger 資訊列的「取消」。該分頁的下一個呼叫會回傳一次此錯誤，之後自動重新連上 |
+| `detached_by_user` | 使用者按了 debugger 資訊列的「取消」。該分頁的下一個呼叫會回傳一次此錯誤（若已有執行中的呼叫回報過則不再重複），之後自動重新連上 |
 
 ## 已知限制
 
-- 操作期間 Chrome 會顯示 debugger 資訊列（「webop 正在偵錯此瀏覽器」），無法隱藏；使用者按下其「取消」等同停止，並使該分頁的下一個呼叫回傳 `detached_by_user`。
+- 操作期間 Chrome 會顯示 debugger 資訊列（「webop 正在偵錯此瀏覽器」），無法隱藏；使用者按下其「取消」等同停止，會中斷所有被偵錯的分頁並停止各自的 session，且使下一個呼叫回傳 `detached_by_user`（已有執行中的呼叫回報過則不重複）。
 - 跨來源 iframe 的內容在截圖中看得到，但 `browser_read_page` 讀不到其無障礙樹內容；對跨網站 iframe 內的點擊／輸入會被拒絕（`permission_denied`）。
 - `javascript` 等級目前只有授權機制，`browser_javascript` 工具將於 M5 提供。
 
@@ -164,7 +164,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 | 6 | 點擊途中把分頁導向另一個網站 | 回傳 `security_check_failed`（或讀取類回傳 `permission_required`），未在新網站送出輸入 | |
 | 7 | agent 執行長動作時按頁內「停止」按鈕 | 動作中斷，回傳 `stopped_by_user`；下一個操作重新詢問「本次允許」的網站 | |
 | 8 | 按工具列圖示 | 所有 session 進行中的呼叫都被停止（回 `stopped_by_user`）；session 仍保持連線，徽章數字不變 | |
-| 9 | 按 debugger 資訊列的「取消」 | 該分頁下一個呼叫回傳一次 `detached_by_user`，再下一個呼叫自動重新連上 | |
+| 9 | 按 debugger 資訊列的「取消」 | 所有被偵錯分頁的 session 都被停止；下一個呼叫回傳一次 `detached_by_user`（已有執行中的呼叫回報過則不重複），再下一個呼叫自動重新連上 | |
 | 10 | 在頁面觸發真正的 `alert()`，再讓 agent 點擊 | 點擊在約 20 秒內回傳 `timeout`；之後再點一次會回「Not performed」，關閉 alert 後也不會補上那次點擊 | |
 
 總結：

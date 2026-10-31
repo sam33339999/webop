@@ -146,6 +146,7 @@ test("old ref after reload never hits the new element", async () => {
   const r = await call(h.sw, "computer", { action: "left_click", tab_id, ref: oldRef });
   assert.ok("error" in r);
   assert.equal(r.error.code, "stale_ref");
+  assert.match(r.error.message, /^Not performed: /);
   assert.equal(await page.title(), "ax");
 });
 

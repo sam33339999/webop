@@ -305,3 +305,65 @@ test("t_no_ask_after_stop: a call stopped while resolving the client name starts
   await sleep(800);
   assert.equal(h.context.pages().filter((p) => p.url().includes("prompt.html")).length, 0, "no prompt window");
 });
+
+/** Installs a one-shot SW listener that presses stop as soon as the tab starts loading (i.e. while the call waits for the load). */
+async function stopWhenLoading(h: Launched, onlyTabId?: number): Promise<void> {
+  await h.sw.evaluate((only) => {
+    const on = (id: number, info: { status?: string }) => {
+      if (only !== undefined && id !== only) return;
+      if (info.status !== "loading") return;
+      chrome.tabs.onUpdated.removeListener(on);
+      void (globalThis as any).__webop.stopSession("test");
+    };
+    chrome.tabs.onUpdated.addListener(on);
+  }, onlyTabId);
+}
+
+test("t_stop_during_navigate_load: a stop during the load wait of a started navigation is not 'Not performed'", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const to = encodeURIComponent(`${h.altUrl}/button.html`);
+  await stopWhenLoading(h, tab_id);
+  const e = errOf(await call(h.sw, "navigate", { tab_id, url: `${h.baseUrl}/redirect.html?to=${to}` }));
+  assert.equal(e.code, "stopped_by_user");
+  assert.ok(!e.message.startsWith("Not performed"), e.message);
+  assert.match(e.message, /^The navigation was started and may still complete: the user pressed stop\./);
+});
+
+test("t_stop_during_tabs_create_load: a stop after the tab was created says so and closes the tab", async () => {
+  const h = await open();
+  const before = (await h.sw.evaluate(() => chrome.tabs.query({}))).length;
+  await stopWhenLoading(h);
+  const e = errOf(await call(h.sw, "tabs_create", { url: `${h.baseUrl}/button.html` }));
+  assert.equal(e.code, "stopped_by_user");
+  assert.ok(!e.message.startsWith("Not performed"), e.message);
+  assert.match(e.message, /tab was opened/);
+  await waitFor(async () => (await h.sw.evaluate(() => chrome.tabs.query({}))).length === before, "tab closed");
+});
+
+test("t_input_keeps_glow_hides_only_stop_button: during an input action the host stays displayed, only the stop button is hidden", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/corner.html`);
+  const page = pageOf(h, "/corner.html");
+  assert.ok("content" in await call(h.sw, "computer", { action: "screenshot", tab_id }));
+  const ctx = await hook<any>(h, "getContext", tab_id);
+  const state = () => h.sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
+  await waitFor(async () => (await state()).stopDisplay === "block", "stop button shown");
+  await h.sw.evaluate(() => {
+    const w = globalThis as any;
+    w.__during = undefined;
+    w.__webop.devHooks.afterTarget = async (id: number) => {
+      w.__webop.devHooks.afterTarget = undefined;
+      w.__during = await chrome.tabs.sendMessage(id, { type: "webop:overlay_state" });
+    };
+  });
+  const [cx, cy] = await stopPoint(page);
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: [(cx * ctx.screenshotWidth) / ctx.viewportWidth, (cy * ctx.screenshotHeight) / ctx.viewportHeight] });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  const during = await h.sw.evaluate(() => (globalThis as any).__during);
+  assert.equal(during.hidden, false, "glow/cursor host stays displayed");
+  assert.equal(during.glowOpacity, "1");
+  assert.equal(during.stopHidden, true, "the stop button is out of the way");
+  assert.equal(await page.evaluate(() => document.title), "corner:1");
+  await waitFor(async () => (await state()).stopHidden === false, "stop button back");
+});

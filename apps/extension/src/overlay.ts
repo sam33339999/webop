@@ -10,6 +10,7 @@ guardHolder.__wopOverlay?.dispose?.();
 type OverlayMessage =
   | { type: "webop:cursor"; x: number; y: number }
   | { type: "webop:overlay"; hidden: boolean }
+  | { type: "webop:stop_button"; hidden: boolean }
   | { type: "webop:glow"; on: boolean; color: string }
   | { type: "webop:session_end" }
   | { type: "webop:overlay_state" };
@@ -62,12 +63,17 @@ chrome.runtime.onMessage.addListener((msg: OverlayMessage, _sender, sendResponse
     glow.style.boxShadow = "none";
     glow.style.opacity = "0";
     stop.style.display = "none";
+    stop.style.visibility = "";
+  } else if (msg.type === "webop:stop_button") {
+    // Only the button steps aside (the agent's own input must not land on it); glow and phantom cursor stay visible.
+    stop.style.visibility = msg.hidden ? "hidden" : "";
+    sendResponse({ ok: true });
   } else if (msg.type === "webop:overlay") {
     host.style.setProperty("display", msg.hidden ? "none" : "block", "important");
     // Reply right away: background tabs (what agents drive) never run requestAnimationFrame, so waiting for a frame would only time out.
     sendResponse({ ok: true });
   } else if (__DEV__ && msg.type === "webop:overlay_state") {
-    sendResponse({ cursorOpacity: cursor.style.opacity, glowOpacity: glow.style.opacity, hidden: host.style.display === "none", stopDisplay: stop.style.display });
+    sendResponse({ cursorOpacity: cursor.style.opacity, glowOpacity: glow.style.opacity, hidden: host.style.display === "none", stopDisplay: stop.style.display, stopHidden: stop.style.visibility === "hidden" });
   }
   return false;
 });
