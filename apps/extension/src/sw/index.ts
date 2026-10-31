@@ -1,4 +1,4 @@
-import { handleDetach, send, timeouts } from "./cdp.ts";
+import { devFaults, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession } from "./sessions.ts";
@@ -40,5 +40,7 @@ if (__DEV__) {
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
-  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
+  /** Test-only: the next Page.captureScreenshot fails once. */
+  const failNextCapture = (): void => { devFaults.failNextCapture = true; };
+  (globalThis as Record<string, unknown>).__webop = { setTimeouts, failNextCapture, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
 }

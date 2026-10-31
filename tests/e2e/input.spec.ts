@@ -160,3 +160,19 @@ test("same-site iframe is allowed", async () => {
   assert.ok("content" in r, "error" in r ? r.error.message : "");
   assert.equal(await frame.evaluate(() => document.title), "clicked:true");
 });
+
+test("t_action_ok_screenshot_fails: a failed capture after a delivered click is not reported as an error", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const page = pageOf(h, h.baseUrl, "/button.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  await h.sw.evaluate(() => (globalThis as any).__webop.failNextCapture());
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  assert.equal(r.content.length, 1);
+  const t = r.content[0];
+  assert.ok(t.type === "text");
+  assert.match(t.text, /^Action performed; screenshot failed: /);
+  assert.equal(await page.title(), "clicked:true");
+});

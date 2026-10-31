@@ -36,6 +36,27 @@ const NAMED: Record<string, KeySpec> = {
   space: { key: " ", code: "Space", keyCode: 32, text: " " },
 };
 
+const PUNCTUATION: Array<[string, string, string, number]> = [
+  // [char, name, code, keyCode]
+  ["/", "slash", "Slash", 191],
+  [".", "period", "Period", 190],
+  [",", "comma", "Comma", 188],
+  [";", "semicolon", "Semicolon", 186],
+  ["'", "quote", "Quote", 222],
+  ["[", "bracketleft", "BracketLeft", 219],
+  ["]", "bracketright", "BracketRight", 221],
+  ["\\", "backslash", "Backslash", 220],
+  ["-", "minus", "Minus", 189],
+  ["=", "equal", "Equal", 187],
+  ["`", "backquote", "Backquote", 192],
+];
+for (const [char, name, code, keyCode] of PUNCTUATION) {
+  const spec: KeySpec = { key: char, code, keyCode, text: char };
+  NAMED[char] = spec;
+  NAMED[name] = spec;
+}
+for (let n = 1; n <= 12; n++) NAMED[`f${n}`] = { key: `F${n}`, code: `F${n}`, keyCode: 111 + n };
+
 function keyFor(token: string): KeySpec {
   const named = NAMED[token];
   if (named) return named;
