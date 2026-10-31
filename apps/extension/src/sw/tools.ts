@@ -34,10 +34,22 @@ function textArg(args: Record<string, unknown>): string {
   return args.text;
 }
 
+async function viewportSize(tabId: number): Promise<{ width: number; height: number }> {
+  const r = await send<{ result: { value: { width: number; height: number } } }>(tabId, "Runtime.evaluate", {
+    expression: "({ width: innerWidth, height: innerHeight })",
+    returnByValue: true,
+  });
+  return r.result.value;
+}
+
 /** Screenshot-frame coordinate -> viewport CSS px, using the context of the last screenshot of this tab. */
-function toViewportPoint(tabId: number, point: [number, number]): [number, number] {
+async function toViewportPoint(tabId: number, point: [number, number]): Promise<[number, number]> {
   const ctx = getContext(tabId);
   if (!ctx) invalid("No screenshot context for this tab; take a screenshot first.");
+  const now = await viewportSize(tabId);
+  if (now.width !== ctx.viewportWidth || now.height !== ctx.viewportHeight) {
+    invalid(`Not performed: the viewport changed size since the last screenshot (${ctx.viewportWidth}x${ctx.viewportHeight} → ${now.width}x${now.height}); take a new screenshot and use its coordinates.`);
+  }
   const r = toViewport(point[0], point[1], ctx);
   if ("oobError" in r) throw new CdpError("oob", r.oobError);
   return r.viewport;

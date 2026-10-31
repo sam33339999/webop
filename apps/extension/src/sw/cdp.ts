@@ -13,6 +13,8 @@ const PROTOCOL_VERSION = "1.3";
 const ATTACH_TIMEOUT_MS = 5000;
 
 const attached = new Set<number>();
+/** Tabs attached by us whose first capture has not yet waited for the viewport to settle (the debugging infobar resizes the page). */
+const unsettled = new Set<number>();
 const attaching = new Map<number, Promise<void>>();
 const pending = new Map<number, Set<(e: CdpError) => void>>();
 const lastDetach = new Map<number, { reason: string; at: number }>();
@@ -51,6 +53,7 @@ export function onDetached(cb: (tabId: number, reason: string) => void): void {
 /** Single place that reacts to a debugger detach, whether it came from Chrome or from the dev hook. */
 export function handleDetach(tabId: number, reason: string): void {
   attached.delete(tabId);
+  unsettled.delete(tabId);
   lastDetach.set(tabId, { reason, at: Date.now() });
   for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();
   const waiting = pending.get(tabId);
@@ -101,7 +104,13 @@ async function doAttach(tabId: number): Promise<void> {
     clearTimeout(timer);
   }
   attached.add(tabId);
+  unsettled.add(tabId);
   lastDetach.delete(tabId);
+}
+
+/** True once per fresh attach (not for a re-adopted attachment): the caller should let the viewport settle before capturing. */
+export function takeFreshAttach(tabId: number): boolean {
+  return unsettled.delete(tabId);
 }
 
 export async function attach(tabId: number): Promise<void> {
