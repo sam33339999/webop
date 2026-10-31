@@ -35,9 +35,8 @@ async function renderGrants(): Promise<void> {
     button.textContent = "Revoke";
     button.className = "revoke";
     button.addEventListener("click", async () => {
-      const current = await readGrants();
-      delete current[site];
-      await chrome.storage.local.set({ [GRANTS_KEY]: current });
+      // The SW owns writes to webop.grants so a revoke cannot race a concurrent grant.
+      await chrome.runtime.sendMessage({ type: "webop:revoke", site });
       await renderGrants();
     });
     action.append(button);

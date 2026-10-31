@@ -47,6 +47,7 @@ async function readOnce(): Promise<Record<string, GrantMap>> {
 
 /** Everything `decide` needs for one session: permanent + this session's `once` grants, deny list and the JS switch. */
 export async function loadPolicy(session_id: string): Promise<Policy> {
+  await ready;
   const stored = await chrome.storage.local.get([DENY_KEY, JS_KEY]);
   const deny = Array.isArray(stored[DENY_KEY]) ? stored[DENY_KEY].filter((s: unknown): s is string => typeof s === "string") : [];
   const onceAll = await readOnce();
@@ -72,6 +73,16 @@ export function grant(session_id: string, site: string, level: Level, scope: Sco
   });
 }
 
+/** Removes every level of `site` from the permanent grants (options page revoke, via the SW so it shares the write chain). */
+export function revokeSite(site: string): Promise<void> {
+  return serial(async () => {
+    const m = await readAlways();
+    if (!Object.hasOwn(m, site)) return;
+    delete m[site];
+    await chrome.storage.local.set({ [GRANTS_KEY]: m });
+  });
+}
+
 export function revokeSessionGrants(session_id: string): Promise<void> {
   return serial(async () => {
     const all = await readOnce();
@@ -90,7 +101,9 @@ export function migrateAllowList(): Promise<void> {
     if (Array.isArray(stored)) {
       for (const s of stored) {
         if (typeof s !== "string" || !s.trim()) continue;
-        const site = s.trim().toLowerCase();
+        const entry = s.trim();
+        const site = siteOf(entry.includes("://") ? entry : `https://${entry}`)?.toLowerCase();
+        if (!site) continue;
         const cur = levelsOf(m, site);
         if (!cur.includes("act")) m[site] = [...cur, "act"];
       }
@@ -98,6 +111,16 @@ export function migrateAllowList(): Promise<void> {
     await chrome.storage.local.set({ [GRANTS_KEY]: m });
     await chrome.storage.local.remove(LEGACY_ALLOW_KEY);
   });
+}
+
+/** Resolves once the startup migration has finished (it never rejects); every read of the grant store waits on it. */
+export let ready: Promise<void> = startMigration();
+function startMigration(): Promise<void> {
+  return migrateAllowList().catch((e) => console.warn("webop allowlist migration failed", e));
+}
+/** Test-only: runs the migration again and makes reads wait for it, as after a fresh SW start. */
+export function rearmReady(): Promise<void> {
+  return (ready = startMigration());
 }
 
 /** Whether `tabs_list` may show this tab's URL/title: the site is not denied and the session (or a permanent grant) holds at least `read`. */
@@ -110,9 +133,12 @@ export async function isSiteReadable(session_id: string, url: string): Promise<b
  * permanent grants cover `act` (same behaviour as M3's allowlist).
  */
 export async function checkSite(url: string): Promise<void> {
+  await ready;
   const site = siteOf(url);
   const always = await readAlways();
-  if (site !== null && covers(levelsOf(always, site), "act")) return;
+  const denied = (await chrome.storage.local.get(DENY_KEY))[DENY_KEY];
+  const isDenied = site !== null && Array.isArray(denied) && denied.includes(site);
+  if (!isDenied && site !== null && covers(levelsOf(always, site), "act")) return;
   const what = site === null ? "this page (not an http(s) site)" : `site "${site}"`;
   throw new CdpError("permission_denied", `Access to ${what} is not allowed; add it in webop options to let the agent use it.`);
 }

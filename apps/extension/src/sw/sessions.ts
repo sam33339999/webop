@@ -96,11 +96,14 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
     await persist(s);
     return { tabIds: out, ended: [...ids] };
   });
-  await Promise.all(ended.map(revokeSessionGrants));
-  await Promise.all(tabIds.map(async (id) => {
-    await detach(id);
-    chrome.tabs.sendMessage(id, { type: "webop:session_end" }).catch(() => {});
-  }));
+  // allSettled: a storage failure while revoking must not skip detaching the tabs.
+  await Promise.allSettled([
+    ...tabIds.map(async (id) => {
+      await detach(id);
+      chrome.tabs.sendMessage(id, { type: "webop:session_end" }).catch(() => {});
+    }),
+    ...ended.map(revokeSessionGrants),
+  ]);
 }
 
 /** Detaches the debugger from the session's tabs, hides its overlay and forgets the session; the tabs stay open. */
