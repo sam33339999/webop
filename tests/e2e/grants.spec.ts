@@ -135,3 +135,59 @@ test("popup shows the screenshot with the marker converted to image pixels", asy
   await popup.getByRole("button", { name: "拒絕" }).click();
   assert.equal(await answer, "deny");
 });
+
+test("a prompt page cannot answer another prompt's id", async () => {
+  const h = await open();
+  const a = ask(h, baseReq({ session_id: "A" }));
+  const popupA = await popupOf(h);
+  const idA = new URL(popupA.url()).searchParams.get("id");
+  const b = ask(h, baseReq({ session_id: "B" }));
+  const popupB = await waitFor(() => promptPages(h).find((p) => p !== popupA), "second prompt window");
+  const idB = new URL(popupB.url()).searchParams.get("id");
+  assert.notEqual(idA, idB);
+  const view = await popupA.evaluate((i) => chrome.runtime.sendMessage({ type: "webop:prompt_get", id: i }), idB);
+  assert.equal(view ?? null, null, "prompt_get for a foreign id returns nothing");
+  await popupA.evaluate((i) => chrome.runtime.sendMessage({ type: "webop:prompt_answer", id: i, answer: "always" }), idB);
+  assert.equal(await Promise.race([b, new Promise((r) => setTimeout(() => r("pending"), 600))]), "pending");
+  await popupB.getByRole("button", { name: "拒絕" }).click();
+  assert.equal(await b, "deny");
+  await popupA.getByRole("button", { name: "拒絕" }).click();
+  assert.equal(await a, "deny");
+});
+
+/** ask() with a controller kept in the SW so the test can abort it later. */
+function askAbortable(h: Launched, name: string, req: Req): Promise<string> {
+  return h.sw.evaluate(([n, r]) => {
+    const g = globalThis as any;
+    g.__ac ??= {};
+    g.__ac[n] = new AbortController();
+    return g.__webop.ask(r, g.__ac[n].signal);
+  }, [name, req] as const);
+}
+const abort = (h: Launched, name: string) => h.sw.evaluate((n) => (globalThis as any).__ac[n].abort(), name);
+
+test("shared prompt closes only when every joined caller has aborted", async () => {
+  const h = await open();
+  const first = askAbortable(h, "c1", baseReq());
+  const second = askAbortable(h, "c2", baseReq());
+  const popup = await popupOf(h);
+  await abort(h, "c1");
+  assert.equal(await first, "deny", "aborted caller is denied at once");
+  assert.equal(await Promise.race([second, new Promise((r) => setTimeout(() => r("pending"), 600))]), "pending");
+  assert.equal(promptPages(h).length, 1, "window stays open for the remaining caller");
+  await abort(h, "c2");
+  assert.equal(await second, "deny");
+  await waitFor(() => popup.isClosed(), "popup closed after all aborted");
+});
+
+test("a caller joining after the prompt settled gets a fresh prompt", async () => {
+  const h = await open();
+  const first = ask(h, baseReq());
+  const popup = await popupOf(h);
+  await popup.getByRole("button", { name: "本次允許" }).click();
+  assert.equal(await first, "once");
+  const again = ask(h, baseReq());
+  const popup2 = await popupOf(h);
+  await popup2.getByRole("button", { name: "永久允許" }).click();
+  assert.equal(await again, "always");
+});
