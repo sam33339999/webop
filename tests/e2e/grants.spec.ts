@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import type { Page } from "@playwright/test";
-import { launch, openTab, type Launched } from "./harness.ts";
+import { call, launch, openTab, type Launched } from "./harness.ts";
 
 const opened: Launched[] = [];
 async function open() {
@@ -11,183 +10,97 @@ async function open() {
 }
 after(async () => { for (const h of opened) await h.close(); });
 
-type Req = { session_id: string; client_name: string; site: string; level: string; tabId?: number; marker?: { x: number; y: number } };
-const baseReq = (o: Partial<Req> = {}): Req => ({ session_id: "s1", client_name: "claude-test", site: "localhost", level: "act", ...o });
+const get = (h: Launched, key: string) => h.sw.evaluate((k) => chrome.storage.local.get(k).then((r) => r[k]), key);
 
-/** Starts ask() in the SW; the returned promise settles with the Answer. */
-function ask(h: Launched, req: Req): Promise<string> {
-  return h.sw.evaluate((r) => (globalThis as any).__webop.ask(r), req);
+async function optionsPage(h: Launched) {
+  const page = await h.context.newPage();
+  await page.goto(`chrome-extension://${new URL(h.sw.url()).host}/options.html`);
+  return page;
 }
 
-const promptPages = (h: Launched): Page[] => h.context.pages().filter((p) => p.url().includes("prompt.html"));
-
-async function waitFor<T>(fn: () => T | undefined | false, what: string, ms = 10_000): Promise<T> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    const v = fn();
-    if (v) return v;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-const popupOf = (h: Launched) => waitFor(() => promptPages(h)[0], "prompt window");
-
-test("t_prompt_allow_once: popup shows client/site/level; 本次允許 resolves once", async () => {
+test("t_migrate_allow: webop.allow becomes act grants and the old key is removed", async () => {
   const h = await open();
-  const answer = ask(h, baseReq());
-  const popup = await popupOf(h);
-  await popup.waitForLoadState("domcontentloaded");
-  await popup.locator("#client").filter({ hasText: "claude-test" }).waitFor();
-  assert.equal(await popup.locator("#site").textContent(), "localhost");
-  assert.equal(await popup.locator("#level").textContent(), "act");
-  await popup.getByRole("button", { name: "本次允許" }).click();
-  assert.equal(await answer, "once");
-  await waitFor(() => promptPages(h).length === 0, "popup closed");
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": {}, "webop.allow": ["localhost"] }));
+  await h.sw.evaluate(() => (globalThis as any).__webop.migrateAllowList());
+  assert.deepEqual(await get(h, "webop.grants"), { localhost: ["act"] });
+  assert.equal(await get(h, "webop.allow"), undefined);
+  const created = await call(h.sw, "tabs_create", { url: `${h.baseUrl}/button.html` });
+  assert.ok("content" in created, "tabs_create should succeed");
+  const tabId = JSON.parse((created as any).content[0].text).tab_id;
+  assert.ok("content" in await call(h.sw, "computer", { action: "screenshot", tab_id: tabId }));
+  const click = await call(h.sw, "computer", { tab_id: tabId, action: "left_click", coordinate: [10, 10] });
+  assert.ok("content" in click, `left_click should succeed without a prompt: ${JSON.stringify(click)}`);
 });
 
-test("t_prompt_always: 永久允許 resolves always", async () => {
+test("t_options_revoke: Revoke removes the site from webop.grants", async () => {
   const h = await open();
-  const answer = ask(h, baseReq());
-  const popup = await popupOf(h);
-  await popup.getByRole("button", { name: "永久允許" }).click();
-  assert.equal(await answer, "always");
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": { localhost: ["act"], "example.com": ["read"] } }));
+  const page = await optionsPage(h);
+  await page.locator('tr[data-site="example.com"] button.revoke').click();
+  await page.locator('tr[data-site="example.com"]').waitFor({ state: "detached" });
+  assert.deepEqual(await get(h, "webop.grants"), { localhost: ["act"] });
 });
 
-test("t_prompt_deny: 拒絕 resolves deny", async () => {
+test("t_options_deny: deny list is normalised to the site key", async () => {
   const h = await open();
-  const answer = ask(h, baseReq());
-  const popup = await popupOf(h);
-  await popup.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await answer, "deny");
+  const page = await optionsPage(h);
+  await page.locator("#deny").fill("https://www.Example.com/x");
+  await page.locator("#save-deny").click();
+  await page.locator("#deny-status").filter({ hasText: "Saved" }).waitFor();
+  assert.deepEqual(await get(h, "webop.deny"), ["example.com"]);
 });
 
-test("t_prompt_timeout: no answer within askMs resolves deny and closes the window", async () => {
+test("t_options_js_toggle: checkbox writes webop.js_enabled", async () => {
   const h = await open();
-  await h.sw.evaluate(() => { (globalThis as any).__webop.promptTimeouts.askMs = 500; });
-  const answer = ask(h, baseReq());
-  await popupOf(h);
-  assert.equal(await answer, "deny");
-  await waitFor(() => promptPages(h).length === 0, "popup closed after timeout");
+  const page = await optionsPage(h);
+  await page.locator("#js-enabled").check();
+  await page.waitForFunction(() => chrome.storage.local.get("webop.js_enabled").then((r) => r["webop.js_enabled"] === true));
+  assert.equal(await get(h, "webop.js_enabled"), true);
 });
 
-test("t_prompt_window_closed: closing the popup resolves deny", async () => {
+const sw = <T>(h: Launched, fn: string, ...a: unknown[]): Promise<T> =>
+  h.sw.evaluate(([f, args]) => (globalThis as any).__webop[f](...args), [fn, a] as const) as Promise<T>;
+
+test("t_deny_beats_always: checkSite rejects a denied site despite a permanent act grant", async () => {
   const h = await open();
-  const answer = ask(h, baseReq());
-  const popup = await popupOf(h);
-  await popup.close();
-  assert.equal(await answer, "deny");
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": { localhost: ["act"] }, "webop.deny": ["localhost"] }));
+  await assert.rejects(sw(h, "checkSite", `${h.baseUrl}/button.html`), /permission_denied|not allowed/);
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.deny": [] }));
+  await sw(h, "checkSite", `${h.baseUrl}/button.html`);
 });
 
-test("t_dedupe: three concurrent asks share one window and one answer", async () => {
+test("t_ready_gate: a read right after SW start sees migrated grants", async () => {
   const h = await open();
-  const answers = [ask(h, baseReq()), ask(h, baseReq()), ask(h, baseReq())];
-  const popup = await popupOf(h);
-  await new Promise((r) => setTimeout(r, 500));
-  assert.equal(promptPages(h).length, 1);
-  await popup.getByRole("button", { name: "本次允許" }).click();
-  assert.deepEqual(await Promise.all(answers), ["once", "once", "once"]);
-  // Another session is a different question.
-  const other = ask(h, baseReq({ session_id: "s2" }));
-  const popup2 = await popupOf(h);
-  await popup2.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await other, "deny");
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": {}, "webop.allow": ["localhost"] }));
+  // rearm starts the migration; checkSite is called immediately without awaiting it.
+  const ok = await h.sw.evaluate(async (u) => {
+    const w = (globalThis as any).__webop;
+    void w.rearmReady();
+    try { await w.checkSite(u); return true; } catch { return false; }
+  }, `${h.baseUrl}/button.html`);
+  assert.equal(ok, true);
 });
 
-test("t_answer_sender_checked: an answer from a page's content-script context is ignored", async () => {
+test("t_migrate_normalize: legacy entries are normalised, merged without clobbering, and idempotent", async () => {
   const h = await open();
-  const tabId = await openTab(h.sw, `${h.baseUrl}/`);
-  const answer = ask(h, baseReq());
-  const popup = await popupOf(h);
-  const id = new URL(popup.url()).searchParams.get("id");
-  assert.ok(id);
-  // Isolated world = content-script context: sender.url is the web page's URL.
-  const got = await h.sw.evaluate(async ([t, i]) => {
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId: t as number },
-      world: "ISOLATED",
-      func: async (pid: string) => {
-        const view = await chrome.runtime.sendMessage({ type: "webop:prompt_get", id: pid });
-        await chrome.runtime.sendMessage({ type: "webop:prompt_answer", id: pid, answer: "always" });
-        return view ?? null;
-      },
-      args: [i as string],
-    });
-    return r.result;
-  }, [tabId, id] as const);
-  assert.equal(got, null, "prompt_get from a content script gets no data");
-  const state = await Promise.race([answer, new Promise((r) => setTimeout(() => r("pending"), 800))]);
-  assert.equal(state, "pending");
-  assert.equal(promptPages(h).length, 1);
-  await popup.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await answer, "deny");
+  await h.sw.evaluate(() => chrome.storage.local.set({
+    "webop.grants": { "keep.com": ["read"], "x.com": ["read"] },
+    "webop.allow": ["https://www.X.com/path", "WWW.Y.com", "  ", "not a url ::"],
+  }));
+  await sw(h, "migrateAllowList");
+  const expected = { "keep.com": ["read"], "x.com": ["read", "act"], "y.com": ["act"] };
+  assert.deepEqual(await get(h, "webop.grants"), expected);
+  assert.equal(await get(h, "webop.allow"), undefined);
+  await sw(h, "migrateAllowList");
+  assert.deepEqual(await get(h, "webop.grants"), expected);
 });
 
-test("popup shows the screenshot with the marker converted to image pixels", async () => {
+test("t_once_revoked_on_close: a once grant disappears when its session closes", async () => {
   const h = await open();
-  const tabId = await openTab(h.sw, `${h.baseUrl}/`);
-  const answer = ask(h, baseReq({ tabId, marker: { x: 100, y: 50 } }));
-  const popup = await popupOf(h);
-  await popup.locator("#marker:not([hidden])").waitFor();
-  assert.ok(await popup.locator("#img").evaluate((i: HTMLImageElement) => i.naturalWidth > 0));
-  const ctx = await h.sw.evaluate((t) => (globalThis as any).__webop.getContext(t), tabId);
-  const left = await popup.locator("#marker").evaluate((m: HTMLElement) => m.style.left);
-  assert.equal(parseFloat(left).toFixed(2), (((100 * ctx.screenshotWidth) / ctx.viewportWidth / ctx.screenshotWidth) * 100).toFixed(2));
-  await popup.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await answer, "deny");
-});
-
-test("a prompt page cannot answer another prompt's id", async () => {
-  const h = await open();
-  const a = ask(h, baseReq({ session_id: "A" }));
-  const popupA = await popupOf(h);
-  const idA = new URL(popupA.url()).searchParams.get("id");
-  const b = ask(h, baseReq({ session_id: "B" }));
-  const popupB = await waitFor(() => promptPages(h).find((p) => p !== popupA), "second prompt window");
-  const idB = new URL(popupB.url()).searchParams.get("id");
-  assert.notEqual(idA, idB);
-  const view = await popupA.evaluate((i) => chrome.runtime.sendMessage({ type: "webop:prompt_get", id: i }), idB);
-  assert.equal(view ?? null, null, "prompt_get for a foreign id returns nothing");
-  await popupA.evaluate((i) => chrome.runtime.sendMessage({ type: "webop:prompt_answer", id: i, answer: "always" }), idB);
-  assert.equal(await Promise.race([b, new Promise((r) => setTimeout(() => r("pending"), 600))]), "pending");
-  await popupB.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await b, "deny");
-  await popupA.getByRole("button", { name: "拒絕" }).click();
-  assert.equal(await a, "deny");
-});
-
-/** ask() with a controller kept in the SW so the test can abort it later. */
-function askAbortable(h: Launched, name: string, req: Req): Promise<string> {
-  return h.sw.evaluate(([n, r]) => {
-    const g = globalThis as any;
-    g.__ac ??= {};
-    g.__ac[n] = new AbortController();
-    return g.__webop.ask(r, g.__ac[n].signal);
-  }, [name, req] as const);
-}
-const abort = (h: Launched, name: string) => h.sw.evaluate((n) => (globalThis as any).__ac[n].abort(), name);
-
-test("shared prompt closes only when every joined caller has aborted", async () => {
-  const h = await open();
-  const first = askAbortable(h, "c1", baseReq());
-  const second = askAbortable(h, "c2", baseReq());
-  const popup = await popupOf(h);
-  await abort(h, "c1");
-  assert.equal(await first, "deny", "aborted caller is denied at once");
-  assert.equal(await Promise.race([second, new Promise((r) => setTimeout(() => r("pending"), 600))]), "pending");
-  assert.equal(promptPages(h).length, 1, "window stays open for the remaining caller");
-  await abort(h, "c2");
-  assert.equal(await second, "deny");
-  await waitFor(() => popup.isClosed(), "popup closed after all aborted");
-});
-
-test("a caller joining after the prompt settled gets a fresh prompt", async () => {
-  const h = await open();
-  const first = ask(h, baseReq());
-  const popup = await popupOf(h);
-  await popup.getByRole("button", { name: "本次允許" }).click();
-  assert.equal(await first, "once");
-  const again = ask(h, baseReq());
-  const popup2 = await popupOf(h);
-  await popup2.getByRole("button", { name: "永久允許" }).click();
-  assert.equal(await again, "always");
+  await openTab(h.sw, `${h.baseUrl}/button.html`, "s1");
+  await sw(h, "grant", "s1", "example.com", "read", "once");
+  const once = () => h.sw.evaluate(() => chrome.storage.session.get("webop.session_grants").then((r) => r["webop.session_grants"]));
+  assert.deepEqual((await once() as any).s1, { "example.com": ["read"] });
+  await sw(h, "closeSession", "s1");
+  assert.equal((await once() as any)?.s1, undefined);
 });

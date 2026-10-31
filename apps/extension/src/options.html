@@ -1,12 +1,19 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>webop options</title>
-<style>body{font:14px system-ui;margin:24px;max-width:560px}textarea{width:100%;height:12em;font:13px ui-monospace,monospace}#status{margin-left:8px;color:#555}</style></head>
+<style>body{font:14px system-ui;margin:24px;max-width:560px}textarea{width:100%;height:8em;font:13px ui-monospace,monospace}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:4px 8px;border-bottom:1px solid #ddd}.status{margin-left:8px;color:#555}</style></head>
 <body>
 <h1>webop</h1>
 <p>Extension ID: <code id="ext-id"></code></p>
 <p>Profile ID: <code id="profile-id"></code></p>
-<h2>Allowed sites</h2>
-<p>One site per line (for example <code>example.com</code>). The agent can only read or act on these sites.</p>
-<textarea id="allow" spellcheck="false"></textarea>
-<p><button id="save">Save</button><span id="status"></span></p>
+<h2>Permanent grants</h2>
+<p>Sites the agent may always use, with the level you granted.</p>
+<table><thead><tr><th>Site</th><th>Level</th><th></th></tr></thead><tbody id="grants"></tbody></table>
+<p id="no-grants">No permanent grants.</p>
+<h2>Denied sites</h2>
+<p>One site per line (for example <code>example.com</code>). The agent is refused on these sites without being asked.</p>
+<textarea id="deny" spellcheck="false"></textarea>
+<p><button id="save-deny">Save</button><span id="deny-status" class="status"></span></p>
+<h2>JavaScript tool</h2>
+<p><label><input type="checkbox" id="js-enabled"> Allow JavaScript tool</label></p>
+<p>Even when enabled, each site must still be granted the JavaScript level.</p>
 <script src="options.js"></script></body></html>

@@ -4,6 +4,7 @@ import { sendWithInject } from "./inject.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession, isOwned } from "./sessions.ts";
 import { ask, promptTimeouts } from "./prompt.ts";
+import { checkSite, grant, migrateAllowList, rearmReady, revokeSite } from "./permissions.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
@@ -22,9 +23,14 @@ setOverlayHider(async (tabId, hidden) => {
 startNativeLink();
 chrome.runtime.onStartup.addListener(startNativeLink);
 chrome.runtime.onInstalled.addListener(startNativeLink);
-chrome.runtime.onMessage.addListener((msg: { type?: string }, sender) => {
+chrome.runtime.onMessage.addListener((msg: { type?: string; site?: unknown }, sender, sendResponse) => {
   // Only our own extension pages may wake the link.
   if (msg?.type === "webop:wake" && sender.id === chrome.runtime.id) wakeNativeLink();
+  // Revoke must come from our own options page (never a content script or another extension).
+  if (msg?.type === "webop:revoke" && typeof msg.site === "string" && sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL("options.html")) {
+    revokeSite(msg.site).then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+    return true;
+  }
   return false;
 });
 
@@ -42,5 +48,5 @@ if (__DEV__) {
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
-  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts };
+  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, checkSite, grant };
 }
