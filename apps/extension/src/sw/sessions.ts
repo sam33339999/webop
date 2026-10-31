@@ -1,4 +1,5 @@
 import { CdpError, detach, setTabGuard } from "./cdp.ts";
+import { revokeSessionGrants } from "./permissions.ts";
 
 const COLORS = ["blue", "purple", "cyan", "green", "orange", "pink", "red", "yellow"] as const;
 const STORE_KEY = "webop.sessions";
@@ -81,7 +82,7 @@ export async function assertLive(session_id: string): Promise<void> {
 
 /** Forgets the sessions picked by `pick` (closed ids are remembered), then releases their tabs; the tabs stay open. */
 async function endSessions(pick: (id: string, st: SessionState) => boolean, alsoClosed: string[] = []): Promise<void> {
-  const tabIds = await locked(async (s) => {
+  const { tabIds, ended } = await locked(async (s) => {
     const out: number[] = [];
     const ids = new Set(alsoClosed);
     for (const [id, st] of Object.entries(s.sessions)) {
@@ -93,8 +94,9 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
     for (const id of ids) if (!s.closed.includes(id)) s.closed.push(id);
     if (s.closed.length > MAX_CLOSED) s.closed.splice(0, s.closed.length - MAX_CLOSED);
     await persist(s);
-    return out;
+    return { tabIds: out, ended: [...ids] };
   });
+  await Promise.all(ended.map(revokeSessionGrants));
   await Promise.all(tabIds.map(async (id) => {
     await detach(id);
     chrome.tabs.sendMessage(id, { type: "webop:session_end" }).catch(() => {});
