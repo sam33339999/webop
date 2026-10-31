@@ -21,6 +21,9 @@ interface Store { created: number; sessions: Record<string, SessionState>; close
 
 const MAX_CLOSED = 500;
 
+/** Dev-only seams for e2e tests (see the `__webop` hook); never set in a production build. */
+export const sessionDevHooks: { beforeCreate?: () => Promise<void> } = {};
+
 let store: Store | undefined;
 let loading: Promise<Store> | undefined;
 let chain: Promise<unknown> = Promise.resolve();
@@ -111,6 +114,7 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
     return { tabIds: out, ended: [...ids] };
   });
   for (const id of ended) abortBackgroundAsks(id);
+  for (const id of tabIds) lit.delete(id);
   // allSettled: a storage failure while revoking must not skip detaching the tabs.
   await Promise.allSettled([
     ...tabIds.map(async (id) => {
@@ -139,16 +143,18 @@ export async function stopSession(session_id: string): Promise<void> {
   bumpStopEpoch(session_id);
   cancelSession(session_id);
   abortBackgroundAsks(session_id);
-  const tabIds = await locked((s) => {
-    const ids = [...(s.sessions[session_id]?.tabIds ?? [])];
-    for (const id of ids) haltTab(id);
-    return ids;
-  });
+  // From the in-memory store the tabs are halted in this same tick, so a running input sequence stops between events.
+  // Without the store (the service worker just restarted) nothing of this session can be running.
+  const tabsOf = (s: Store): number[] => [...(s.sessions[session_id]?.tabIds ?? [])];
+  const tabIds = store ? tabsOf(store) : await locked(tabsOf);
+  for (const id of tabIds) {
+    haltTab(id);
+    lit.delete(id);
+    // Sent before anything awaits, so a call that starts right after the stop and lights the tab again is not overruled.
+    chrome.tabs.sendMessage(id, { type: "webop:glow", on: false, color: "" }, { frameId: 0 }).catch(() => {});
+  }
   await Promise.allSettled([
-    ...tabIds.map(async (id) => {
-      await detach(id);
-      chrome.tabs.sendMessage(id, { type: "webop:glow", on: false, color: "" }, { frameId: 0 }).catch(() => {});
-    }),
+    ...tabIds.map(detach),
     revokeSessionGrants(session_id),
   ]);
 }
@@ -168,10 +174,27 @@ onDetached((tabId, reason) => {
   if (reason === "canceled_by_user") void stopSessionsOwning(tabId);
 });
 
-/** Lights the session's glow (and with it the stop button) on a tab it is about to act on. Best effort. */
-export async function showGlow(session_id: string, tabId: number): Promise<void> {
+/** The toolbar icon: the stop the page cannot get in the way of. Stops every session of this profile. */
+export async function stopAllSessions(): Promise<void> {
+  const ids = store ? Object.keys(store.sessions) : await locked((s) => Object.keys(s.sessions));
+  await Promise.all(ids.map(stopSession));
+}
+
+/** Tabs whose overlay should be lit (glow + stop button), so a reloaded document gets it back. Cleared by stop and session end. */
+const lit = new Map<number, string>();
+
+/**
+ * Lights the session's glow (and with it the stop button) on a tab it controls. Best effort.
+ * `isStale` is the caller's `ctx.stopped`: a call the user already stopped must not light anything again.
+ */
+export async function showGlow(session_id: string, tabId: number, isStale: () => boolean = () => false): Promise<void> {
+  if (isStale()) return;
+  lit.set(tabId, session_id);
   const color = await locked((s) => GLOW_COLORS[s.sessions[session_id]?.color ?? "blue"]);
-  await sendWithInject(tabId, { type: "webop:glow", on: true, color }, isOwned).catch(() => {});
+  // Re-checked at delivery (also after an inject retry): a stop in between has already switched the overlay off.
+  const stillWanted = async (id: number): Promise<boolean> => !isStale() && lit.get(id) === session_id && (await isOwned(id));
+  if (!(await stillWanted(tabId))) return;
+  await sendWithInject(tabId, { type: "webop:glow", on: true, color }, stillWanted).catch(() => {});
 }
 
 /** Sessions belong to one host connection; when that connection ends (or a new one starts) they all go. */
@@ -211,9 +234,12 @@ async function enroll(s: Store, st: SessionState, tabId: number): Promise<void> 
 }
 
 /** Opens a background tab and puts it in the session's tab group. The caller must have checked the URL. */
-export async function createTab(session_id: string, url: string): Promise<chrome.tabs.Tab> {
+export async function createTab(session_id: string, url: string, beforeCreate: () => void = () => {}): Promise<chrome.tabs.Tab> {
   const tabId = await locked(async (s) => {
     if (s.closed.includes(session_id)) throw sessionClosedError();
+    if (__DEV__) await sessionDevHooks.beforeCreate?.();
+    // The lock wait can be long; a stop (or cancel) that landed meanwhile must not open the tab.
+    beforeCreate();
     const st = open(s, session_id, session_id);
     const tab = await chrome.tabs.create({ url, active: false });
     if (tab.id === undefined) throw new CdpError("internal", "Created tab has no id.");
@@ -256,6 +282,7 @@ export async function listTabs(session_id: string): Promise<{ tab_id: number; ti
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  lit.delete(tabId);
   void locked(async (s) => {
     let changed = false;
     for (const st of Object.values(s.sessions)) {
@@ -273,6 +300,9 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   void (async () => {
     if (!(await isOwned(tabId))) return;
     await ensureInjected(tabId);
+    // A fresh document of a tab that is being operated gets its glow and stop button back.
+    const owner = lit.get(tabId);
+    if (owner !== undefined) void showGlow(owner, tabId);
     // Ownership may have ended while injecting; make sure nothing of ours stays visible.
     if (!(await isOwned(tabId))) await chrome.tabs.sendMessage(tabId, { type: "webop:session_end" }).catch(() => {});
   })().catch((e) => {

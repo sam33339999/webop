@@ -282,7 +282,7 @@ test("closing a session hides the cursor and glow on its tabs", async () => {
 });
 
 const overlayHosts = (page: import("@playwright/test").Page) =>
-  page.evaluate(() => [...document.documentElement.children].filter((e) => (e as HTMLElement).style.cssText.includes("2147483646")).length);
+  page.evaluate(() => [...document.documentElement.children].filter((e) => (e as HTMLElement).style.cssText.includes("2147483647")).length);
 
 test("t_foreign_tab_untouched: user-opened tabs get no overlay host", async () => {
   const { sw, baseUrl, context } = await open();

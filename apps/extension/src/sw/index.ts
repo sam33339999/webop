@@ -2,7 +2,7 @@ import { devFaults, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { afterLoad, devHooks, dispatch } from "./tools.ts";
-import { adoptTab, closeSession, isOwned, openSession, stopEpoch, stopSessionsOwning } from "./sessions.ts";
+import { adoptTab, closeSession, isOwned, openSession, sessionDevHooks, stopAllSessions, stopEpoch, stopSession, stopSessionsOwning } from "./sessions.ts";
 import { ask, promptTimeouts } from "./prompt.ts";
 import { grant, requireAccess, migrateAllowList, rearmReady, revokeSite } from "./permissions.ts";
 import { cancelCall, openCallContext, PENDING_MARGIN_MS, setPendingSink } from "./callctx.ts";
@@ -38,6 +38,10 @@ chrome.runtime.onMessage.addListener((msg: { type?: string; site?: unknown }, se
   }
   return false;
 });
+
+// The toolbar icon is the stop that page script and page CSS cannot touch: it stops every session of this profile.
+const onActionClicked = (): void => { void stopAllSessions(); };
+chrome.action.onClicked.addListener(onActionClicked);
 
 if (__DEV__) {
   /** Test-only hook: detaches the debugger and runs the same handler Chrome's onDetach event uses. */
@@ -80,5 +84,5 @@ if (__DEV__) {
     const id = opts?.closeSession;
     devFaults.beforeFail = id === undefined ? undefined : () => closeSession(id);
   };
-  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, openSession, stopEpoch, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks };
+  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, openSession, stopEpoch, stopSession, sessionDevHooks, actionClicked: onActionClicked, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks };
 }

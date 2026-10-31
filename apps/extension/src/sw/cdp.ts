@@ -23,7 +23,7 @@ const CANCEL_GRACE_MS = 100;
 /** Tabs a stop just released: nothing may re-attach to them until a call that started after the stop takes its turn. */
 const halted = new Set<number>();
 /** Tabs whose debugger bar the user cancelled while no command was waiting; the next call on them says so once. */
-const detachNotices = new Set<number>();
+const detachNotices = new Map<number, number>();
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
 export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
@@ -67,6 +67,12 @@ export function takeDetachNotice(tabId: number): boolean {
   return detachNotices.delete(tabId);
 }
 
+/** A call that ran while the user cancelled has told its caller already; drop a notice that arose since `since`. */
+export function dropDetachNoticeSince(tabId: number, since: number): void {
+  const at = detachNotices.get(tabId);
+  if (at !== undefined && at >= since) detachNotices.delete(tabId);
+}
+
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
   detachListeners.push(cb);
 }
@@ -78,7 +84,7 @@ export function handleDetach(tabId: number, reason: string): void {
   lastDetach.set(tabId, { reason, at: Date.now() });
   for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();
   const waiting = pending.get(tabId);
-  if (reason === "canceled_by_user" && !(waiting && waiting.size > 0)) detachNotices.add(tabId);
+  if (reason === "canceled_by_user" && !(waiting && waiting.size > 0)) detachNotices.set(tabId, Date.now());
   if (waiting && reason === "canceled_by_user") {
     for (const reject of [...waiting]) {
       reject(new CdpError("detached_by_user", "The user closed the debugging session for this tab. Retry to re-attach."));

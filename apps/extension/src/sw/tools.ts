@@ -1,6 +1,6 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
+import { CdpError, dropDetachNoticeSince, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -313,7 +313,7 @@ async function historyEntry(tabId: number, dir: "back" | "forward"): Promise<{ i
  * Re-checks the tab's current site after content was produced; content is withheld unless the session may `read` it.
  * A site that only needs the user's approval answers permission_required and shows the question, so a retry can succeed.
  */
-async function recheck(session_id: string, tabId: number, performed: boolean): Promise<void> {
+async function recheck(session_id: string, tabId: number, performed: boolean, ctx: CallContext): Promise<void> {
   const url = await currentUrl(tabId);
   const state = await accessState(session_id, url, "read");
   if (state === "allow") return;
@@ -322,6 +322,7 @@ async function recheck(session_id: string, tabId: number, performed: boolean): P
   if (state === "deny") {
     throw new CdpError("permission_denied", `${lead} tab is now on a site that is not allowed (${site}); no content is returned.`);
   }
+  if (ctx.stopped()) throw stoppedError();
   askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
   throw new CdpError("permission_required", `${lead} tab is now on ${site}, which needs the user's approval; no content is returned. A prompt was shown to the user; after they allow it, retry (e.g. read_page).`);
 }
@@ -346,6 +347,7 @@ async function requireReadable(session_id: string, tabId: number, ctx: CallConte
   if (state === "deny") throw deniedError(url);
   if (state === "ask") {
     const site = siteOf(url);
+    if (ctx.stopped()) throw stoppedError();
     askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
     throw new CdpError("permission_required", `The tab is on ${site}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
   }
@@ -359,6 +361,7 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
   const history = target === "back" || target === "forward";
   const entry = history ? await historyEntry(tabId, target) : undefined;
   await gate(session_id, ctx, entry ? entry.url : target, "read", { tabId, what: "the navigation was not started" });
+  void showGlow(session_id, tabId, ctx.stopped);
   // The wait is capped by the call's deadline so the extension answers before the MCP host gives up.
   const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, ctx.deadline - Date.now()));
   try {
@@ -375,7 +378,7 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
     }
     throw e;
   }
-  await recheck(session_id, tabId, true);
+  await recheck(session_id, tabId, true, ctx);
   const final = await currentUrl(tabId);
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
@@ -402,7 +405,16 @@ async function withTab<T>(tabId: number, ctx: CallContext, fn: () => Promise<T>)
     if (takeDetachNotice(tabId)) {
       throw new CdpError("detached_by_user", "Not performed: the user stopped debugging this tab; retry to re-attach.");
     }
-    return await fn();
+    const startedAt = Date.now();
+    try {
+      const result = await fn();
+      if (ctx.stopped()) dropDetachNoticeSince(tabId, startedAt);
+      return result;
+    } catch (e) {
+      // This call is the one that tells the caller about a cancel that happened while it ran; the next call need not.
+      if (ctx.stopped() || (e instanceof CdpError && (e.code === "stopped_by_user" || e.code === "detached_by_user"))) dropDetachNoticeSince(tabId, startedAt);
+      throw e;
+    }
   } finally {
     release();
     if (tabQueues.get(tabId) === tail) tabQueues.delete(tabId);
@@ -421,14 +433,16 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "tabs_create") {
     const url = urlArg(call.args);
     await gate(call.session_id, ctx, url, "read", { what: "no tab was opened" });
-    const tab = await createTab(call.session_id, url);
+    const tab = await createTab(call.session_id, url, () => assertBeforeDeadline(ctx));
     const tab_id = tab.id as number;
+    void showGlow(call.session_id, tab_id, ctx.stopped);
     await afterLoad(tab_id, async () => {});
     try {
       const landed = await currentUrl(tab_id);
       const state = await accessState(call.session_id, landed, "read");
       if (state === "deny") throw deniedError(landed, "The tab was closed");
       if (state === "ask") {
+        if (ctx.stopped()) throw stoppedError();
         askInBackground({ session_id: call.session_id, client_name: await clientNameOf(call.session_id), url: landed, level: "read" });
         throw new CdpError("permission_required", `The tab was closed because it ended up on ${siteOf(landed)}, which needs the user's approval. A prompt was shown to the user; after they allow it, retry tabs_create.`);
       }
@@ -466,7 +480,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         // or declined site must see no webop activity at all. A deny answers here without any page call.
         await gate(call.session_id, ctx, first, "act", { tabId, marker: markerFor(action, tabId, call.args), what: "no input was sent" });
       }
-      if (performed) void showGlow(call.session_id, tabId);
+      void showGlow(call.session_id, tabId, ctx.stopped);
       const authorizedUrl = first;
       const assertSameSite = async (): Promise<void> => {
         const { url, pendingUrl } = await tabUrls(tabId);
@@ -499,7 +513,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           await settle(tabId);
         }
         await assertLive(call.session_id);
-        await recheck(call.session_id, tabId, performed);
+        await recheck(call.session_id, tabId, performed, ctx);
         if (ctx.stopped()) throw stoppedError();
         let shot: Awaited<ReturnType<typeof screenshot>>;
         try {
@@ -508,11 +522,11 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           // The action already went out in full; a failed capture must not read as a failed action.
           if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
           await assertLive(call.session_id);
-          await recheck(call.session_id, tabId, performed);
+          await recheck(call.session_id, tabId, performed, ctx);
           const why = e instanceof Error ? e.message : String(e);
           return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
         }
-        await recheck(call.session_id, tabId, performed);
+        await recheck(call.session_id, tabId, performed, ctx);
         // The user may have pressed stop while we were busy; the result is withheld.
         if (ctx.stopped()) throw stoppedError();
         const { block, ctx: shotCtx } = shot;
@@ -540,6 +554,7 @@ async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const tabId = tabIdOf(call.args);
   await assertOwned(call.session_id, tabId);
   await requireReadable(call.session_id, tabId, ctx);
+  void showGlow(call.session_id, tabId, ctx.stopped);
   const { filter, ref_id, max_chars } = call.args;
   if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
   if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");
@@ -552,7 +567,7 @@ async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
   await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
   await assertLive(call.session_id);
-  await recheck(call.session_id, tabId, false);
+  await recheck(call.session_id, tabId, false, ctx);
   return { content: [{ type: "text", text: r.text }] };
 }
 

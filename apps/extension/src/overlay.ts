@@ -15,7 +15,16 @@ type OverlayMessage =
   | { type: "webop:overlay_state" };
 
 const host = document.createElement("div");
-host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483646;";
+// Every inline declaration is `!important`, so ordinary page CSS (even `html > div { display: none !important }`) cannot
+// hide, move or cover the host, and the stop button inside it sits at the top of the z-order (2147483647).
+// Not covered: elements in the top layer (<dialog>.showModal(), popovers, fullscreen) and a capture-phase
+// stopPropagation() on window can still keep the in-page button from being seen or clicked. The debugger-bar cancel
+// and the toolbar icon are the stops the page cannot interfere with.
+const HOST_STYLE: Array<[string, string]> = [
+  ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["pointer-events", "none"], ["z-index", "2147483647"],
+  ["display", "block"], ["visibility", "visible"], ["opacity", "1"], ["transform", "none"],
+];
+for (const [k, v] of HOST_STYLE) host.style.setProperty(k, v, "important");
 const root = host.attachShadow({ mode: "closed" });
 root.innerHTML = `
 <style>
@@ -53,11 +62,11 @@ chrome.runtime.onMessage.addListener((msg: OverlayMessage, _sender, sendResponse
     glow.style.opacity = "0";
     stop.style.display = "none";
   } else if (msg.type === "webop:overlay") {
-    host.style.display = msg.hidden ? "none" : "";
+    host.style.setProperty("display", msg.hidden ? "none" : "block", "important");
     // Reply right away: background tabs (what agents drive) never run requestAnimationFrame, so waiting for a frame would only time out.
     sendResponse({ ok: true });
   } else if (__DEV__ && msg.type === "webop:overlay_state") {
-    sendResponse({ cursorOpacity: cursor.style.opacity, glowOpacity: glow.style.opacity, hidden: host.style.display === "none" });
+    sendResponse({ cursorOpacity: cursor.style.opacity, glowOpacity: glow.style.opacity, hidden: host.style.display === "none", stopDisplay: stop.style.display });
   }
   return false;
 });
