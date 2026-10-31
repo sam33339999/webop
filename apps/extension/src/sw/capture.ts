@@ -59,7 +59,8 @@ async function waitForStableViewport(tabId: number): Promise<void> {
   }
 }
 
-export async function screenshot(tabId: number): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
+/** `store: false` takes a picture for the user's eyes (permission prompt) without replacing the context the agent's coordinates are mapped with. */
+export async function screenshot(tabId: number, opts: { store?: boolean } = {}): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   await attach(tabId);
   if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -92,7 +93,7 @@ export async function screenshot(tabId: number): Promise<{ block: ContentBlock; 
       screenshotWidth: outWidth,
       screenshotHeight: outHeight,
     };
-    contexts.set(tabId, ctx);
+    if (opts.store !== false) contexts.set(tabId, ctx);
     return { block: { type: "image", data, mimeType: "image/jpeg" }, ctx };
   } finally {
     if (__DEV__) hiderLog.push({ tabId, hidden: false });

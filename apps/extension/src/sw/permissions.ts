@@ -153,11 +153,14 @@ function siteLabel(site: string | null): string {
   return site === null ? "this page (not an http(s) site)" : `site "${site}"`;
 }
 
-/** permission_denied for a refused site (deny list, non-web page); `note` says what was or was not performed. */
-export function deniedError(url: string, note = "Not performed"): CdpError {
+/** permission_denied for a refused request (non-web page, deny list, JavaScript switched off); `note` says what was or was not performed. */
+export function deniedError(url: string, note = "Not performed", policy?: Policy, level?: Level): CdpError {
   const site = siteOf(url);
-  const why = site === null ? "is not an http(s) page, which webop never touches" : "is on the deny list in webop options";
-  return new CdpError("permission_denied", `${note}: ${siteLabel(site)} ${why}.`);
+  if (site === null) return new CdpError("permission_denied", `${note}: ${siteLabel(site)} is not an http(s) page, which webop never touches.`);
+  if (level === "javascript" && policy && !policy.jsEnabled && !policy.deny.includes(site)) {
+    return new CdpError("permission_denied", `${note}: JavaScript execution is disabled in webop options (${siteLabel(site)}).`);
+  }
+  return new CdpError("permission_denied", `${note}: ${siteLabel(site)} is on the deny list in webop options.`);
 }
 
 /**
@@ -166,9 +169,10 @@ export function deniedError(url: string, note = "Not performed"): CdpError {
  */
 export async function requireAccess(o: AccessRequest): Promise<void> {
   const site = siteOf(o.url);
-  const state = decide(await loadPolicy(o.session_id), site, o.level);
+  const policy = await loadPolicy(o.session_id);
+  const state = decide(policy, site, o.level);
   if (state === "allow") return;
-  if (state === "deny" || site === null) throw deniedError(o.url);
+  if (state === "deny" || site === null) throw deniedError(o.url, "Not performed", policy, o.level);
   o.beforeAsk?.();
   const answer = await ask({ session_id: o.session_id, client_name: o.client_name, site, level: o.level, tabId: o.tabId, marker: o.marker }, o.signal);
   if (o.signal?.aborted) throw new CdpError("timeout", "Not performed: the caller cancelled this call.");
@@ -178,12 +182,25 @@ export async function requireAccess(o: AccessRequest): Promise<void> {
   await grant(o.session_id, site, o.level, answer === "always" ? "always" : "once");
 }
 
+const backgroundAsks = new Map<string, AbortController>();
+
+/** A closed session's unanswered background questions go away with it; a late answer stores nothing. */
+export function abortBackgroundAsks(session_id: string): void {
+  backgroundAsks.get(session_id)?.abort();
+  backgroundAsks.delete(session_id);
+}
+
 /** Shows the question without waiting for it (the call itself is already answered); a yes is stored for the retry. */
 export function askInBackground(o: Omit<AccessRequest, "signal" | "beforeAsk" | "what">): void {
+  let ac = backgroundAsks.get(o.session_id);
+  if (!ac || ac.signal.aborted) backgroundAsks.set(o.session_id, (ac = new AbortController()));
+  const signal = ac.signal;
   void (async () => {
     const site = siteOf(o.url);
     if (site === null || decide(await loadPolicy(o.session_id), site, o.level) !== "ask") return;
-    const answer = await ask({ session_id: o.session_id, client_name: o.client_name, site, level: o.level, tabId: o.tabId, marker: o.marker });
+    if (signal.aborted) return;
+    const answer = await ask({ session_id: o.session_id, client_name: o.client_name, site, level: o.level, tabId: o.tabId, marker: o.marker }, signal);
+    if (signal.aborted) return;
     if (answer !== "deny") await grant(o.session_id, site, o.level, answer === "always" ? "always" : "once");
   })().catch(() => {});
 }

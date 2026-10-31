@@ -1,7 +1,7 @@
 import { cancelSession } from "./callctx.ts";
 import { ensureInjected } from "./inject.ts";
 import { CdpError, detach, setTabGuard } from "./cdp.ts";
-import { revokeSessionGrants } from "./permissions.ts";
+import { abortBackgroundAsks, revokeSessionGrants } from "./permissions.ts";
 
 const COLORS = ["blue", "purple", "cyan", "green", "orange", "pink", "red", "yellow"] as const;
 const STORE_KEY = "webop.sessions";
@@ -98,6 +98,7 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
     await persist(s);
     return { tabIds: out, ended: [...ids] };
   });
+  for (const id of ended) abortBackgroundAsks(id);
   // allSettled: a storage failure while revoking must not skip detaching the tabs.
   await Promise.allSettled([
     ...tabIds.map(async (id) => {

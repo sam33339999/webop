@@ -45,7 +45,7 @@ async function buildView(req: AskRequest): Promise<PromptView> {
   const view: PromptView = { client_name: req.client_name, site: req.site, level: req.level };
   if (req.tabId === undefined) return view;
   try {
-    const { block, ctx } = await screenshot(req.tabId);
+    const { block, ctx } = await screenshot(req.tabId, { store: false });
     if (block.type === "image") {
       view.image = `data:${block.mimeType};base64,${block.data}`;
       if (req.marker) {

@@ -114,19 +114,34 @@ async function guardedTarget(tabId: number, args: Record<string, unknown>, coord
   return point;
 }
 
-/** The two checkpoints an input action passes: permission once the target is known, and a site re-read right before input. */
+/** The site re-read an input action passes right before input is sent (permission was settled before the page was touched). */
 interface InputGuard {
-  onTarget(marker?: Point): Promise<void>;
   beforeInput(): Promise<void>;
+}
+
+const INPUT_ACTIONS: ReadonlySet<string> = new Set([
+  "left_click", "right_click", "double_click", "hover", "scroll_to", "left_click_drag", "type", "key", "scroll",
+]);
+
+/**
+ * Where the user is shown the click will land, computed from the stored screenshot context alone (no page call).
+ * Ref targets get no marker: their position is only known by asking the page. Anything unusable just means no marker.
+ */
+function markerFor(action: string, tabId: number, args: Record<string, unknown>): Point | undefined {
+  const name = action === "left_click_drag" ? "start_coordinate" : "coordinate";
+  const ctx = getContext(tabId);
+  const v = args[name];
+  if (!ctx || args.ref !== undefined || args.start_ref !== undefined) return undefined;
+  if (!Array.isArray(v) || v.length !== 2 || typeof v[0] !== "number" || typeof v[1] !== "number") return undefined;
+  const r = toViewport(v[0], v[1], ctx);
+  return "oobError" in r ? undefined : { x: r.viewport[0], y: r.viewport[1] };
 }
 
 async function perform(action: string, tabId: number, args: Record<string, unknown>, g: InputGuard): Promise<void> {
   const target = () => guardedTarget(tabId, args, "coordinate", "ref");
-  const mark = (p: [number, number]): Point => ({ x: p[0], y: p[1] });
-  /** Resolves the single target, asks for `act` with its position, and re-checks the site. */
+  /** Resolves the single target, then re-checks the site. */
   const aim = async (): Promise<[number, number]> => {
     const p = await target();
-    await g.onTarget(mark(p));
     await g.beforeInput();
     return p;
   };
@@ -137,14 +152,12 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
     case "hover": return hover(tabId, ...(await aim()));
     case "scroll_to": {
       if (args.ref === undefined) invalid("scroll_to requires ref.");
-      const p = await refPoint(tabId, args.ref);
-      await g.onTarget(mark(p));
+      await refPoint(tabId, args.ref);
       await g.beforeInput();
       return;
     }
     case "left_click_drag": {
       const from = await guardedTarget(tabId, args, "start_coordinate", "start_ref");
-      await g.onTarget(mark(from));
       const to = await target();
       await g.beforeInput();
       return drag(tabId, from, to);
@@ -152,14 +165,12 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
     case "type": {
       const text = textArg(args);
       await assertNotCrossSiteFrame(tabId);
-      await g.onTarget();
       await g.beforeInput();
       return typeText(tabId, text);
     }
     case "key": {
       const combo = textArg(args);
       await assertNotCrossSiteFrame(tabId);
-      await g.onTarget();
       await g.beforeInput();
       try {
         return await pressKeys(tabId, combo);
@@ -250,6 +261,16 @@ async function currentUrl(tabId: number): Promise<string> {
   }
 }
 
+/** The tab's committed URL and, while a navigation is in flight, the URL it is heading to. */
+async function tabUrls(tabId: number): Promise<{ url: string; pendingUrl?: string }> {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    return { url: t.url ?? "", pendingUrl: t.pendingUrl };
+  } catch {
+    throw new CdpError("tab_not_in_session", `Tab ${tabId} does not exist.`);
+  }
+}
+
 /**
  * Blocks until the session holds `level` on the URL's site (asking the user when needed); the call's deadline restarts
  * after an answer, and a cancel or an expired deadline stops the call before anything state-changing starts.
@@ -305,6 +326,22 @@ async function settle(tabId: number): Promise<void> {
     if (!t || t.status !== "loading") return;
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+/**
+ * Reads never block on a prompt (spec 4.4): a tab that is on a site this session may not read gets permission_required
+ * and the question is shown in the background, so a retry can succeed once the user allows it.
+ */
+async function requireReadable(session_id: string, tabId: number, ctx: CallContext): Promise<void> {
+  const url = await currentUrl(tabId);
+  const state = await accessState(session_id, url, "read");
+  if (state === "deny") throw deniedError(url);
+  if (state === "ask") {
+    const site = siteOf(url);
+    askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
+    throw new CdpError("permission_required", `The tab is on ${site}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
+  }
+  assertBeforeDeadline(ctx);
 }
 
 async function navigate(session_id: string, args: Record<string, unknown>, ctx: CallContext): Promise<Outcome> {
@@ -409,31 +446,38 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       const performed = action !== "screenshot";
       const first = await currentUrl(tabId);
       if (!performed) {
-        await gate(call.session_id, ctx, first, "read", { tabId });
+        await requireReadable(call.session_id, tabId, ctx);
       } else {
-        // A refused site must never be touched: fail before the probe, the target lookup or any prompt.
-        if ((await accessState(call.session_id, first, "act")) === "deny") throw deniedError(first);
-        assertBeforeDeadline(ctx);
+        if (!INPUT_ACTIONS.has(action)) invalid(`Unknown computer action: ${action}`);
+        // Permission comes BEFORE anything touches the page (target lookup, scrolling, frame check, probe): a refused
+        // or declined site must see no webop activity at all. A deny answers here without any page call.
+        await gate(call.session_id, ctx, first, "act", { tabId, marker: markerFor(action, tabId, call.args), what: "no input was sent" });
+      }
+      const authorizedUrl = first;
+      const assertSameSite = async (): Promise<void> => {
+        const { url, pendingUrl } = await tabUrls(tabId);
+        const was = siteOf(authorizedUrl);
+        for (const u of [url, pendingUrl]) {
+          if (u !== undefined && siteOf(u) !== was) {
+            throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(u) ?? u} before input was sent.`);
+          }
+        }
+      };
+      const guard: InputGuard = {
+        async beforeInput() {
+          if (__DEV__) await devHooks.afterTarget?.(tabId);
+          await assertSameSite();
+          assertBeforeDeadline(ctx);
+        },
+      };
+      if (performed) {
+        // The user may have taken a while (or the tab moved on); nothing computed before the answer is reused, and a
+        // tab that left the authorized site is not touched at all.
+        await assertSameSite();
         await assertResponsive(tabId);
         // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
         assertBeforeDeadline(ctx);
       }
-      let authorizedUrl = first;
-      const guard: InputGuard = {
-        async onTarget(marker) {
-          authorizedUrl = await currentUrl(tabId);
-          await gate(call.session_id, ctx, authorizedUrl, "act", { tabId, marker, what: "no input was sent" });
-        },
-        async beforeInput() {
-          if (__DEV__) await devHooks.afterTarget?.(tabId);
-          const now = await currentUrl(tabId);
-          const was = siteOf(authorizedUrl);
-          if (siteOf(now) !== was) {
-            throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(now) ?? now} before input was sent.`);
-          }
-          assertBeforeDeadline(ctx);
-        },
-      };
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
@@ -477,7 +521,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
 async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const tabId = tabIdOf(call.args);
   await assertOwned(call.session_id, tabId);
-  await gate(call.session_id, ctx, await currentUrl(tabId), "read", { tabId });
+  await requireReadable(call.session_id, tabId, ctx);
   const { filter, ref_id, max_chars } = call.args;
   if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
   if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");

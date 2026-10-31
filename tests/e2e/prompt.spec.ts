@@ -129,9 +129,10 @@ test("popup shows the screenshot with the marker converted to image pixels", asy
   const popup = await popupOf(h);
   await popup.locator("#marker:not([hidden])").waitFor();
   assert.ok(await popup.locator("#img").evaluate((i: HTMLImageElement) => i.naturalWidth > 0));
-  const ctx = await h.sw.evaluate((t) => (globalThis as any).__webop.getContext(t), tabId);
+  // The prompt's picture is not stored as the agent's context, so derive the expectation from the page itself.
+  const viewportWidth = await h.sw.evaluate((t) => chrome.scripting.executeScript({ target: { tabId: t }, func: () => innerWidth }).then((r) => r[0]!.result as number), tabId);
   const left = await popup.locator("#marker").evaluate((m: HTMLElement) => m.style.left);
-  assert.equal(parseFloat(left).toFixed(2), (((100 * ctx.screenshotWidth) / ctx.viewportWidth / ctx.screenshotWidth) * 100).toFixed(2));
+  assert.equal(parseFloat(left).toFixed(2), ((100 / viewportWidth) * 100).toFixed(2));
   await popup.getByRole("button", { name: "拒絕" }).click();
   assert.equal(await answer, "deny");
 });
