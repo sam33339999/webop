@@ -3,6 +3,7 @@ import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession, isOwned } from "./sessions.ts";
+import { ask, promptTimeouts } from "./prompt.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
@@ -41,5 +42,5 @@ if (__DEV__) {
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
-  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
+  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts };
 }

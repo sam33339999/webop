@@ -15,8 +15,9 @@ await mkdir(dist, { recursive: true });
 const common = { bundle: true, minify: !dev, define: { __DEV__: String(dev) }, target: "chrome116", logLevel: "warning" as const };
 
 await build({ ...common, entryPoints: [join(root, "src/sw/index.ts")], outfile: join(dist, "sw.js"), format: "esm" });
-for (const name of ["overlay", "ax", "options"]) {
+for (const name of ["overlay", "ax", "options", "prompt"]) {
   await build({ ...common, entryPoints: [join(root, `src/${name}.ts`)], outfile: join(dist, `${name}.js`), format: "iife" });
 }
 await cp(join(root, "manifest.json"), join(dist, "manifest.json"));
 await cp(join(root, "src/options.html"), join(dist, "options.html"));
+await cp(join(root, "src/prompt.html"), join(dist, "prompt.html"));
