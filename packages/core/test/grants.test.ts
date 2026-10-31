@@ -46,3 +46,16 @@ test("decide", () => {
   assert.equal(decide(policy({ once: { "a.com": ["read"] } }), "a.com", "act"), "ask");
   assert.equal(decide(policy(), "a.com", "javascript"), "ask");
 });
+
+test("levelFor is fail-closed on unknown tools", () => {
+  assert.throws(() => levelFor("browser_navigate"), /Unknown tool: browser_navigate/);
+  assert.throws(() => levelFor("nope"), /Unknown tool: nope/);
+  assert.equal(levelFor("computer"), "act");
+});
+
+test("deny beats once; prototype-named sites do not throw", () => {
+  assert.equal(decide(policy({ deny: ["a.com"], once: { "a.com": ["act"] } }), "a.com", "read"), "deny");
+  assert.equal(decide(policy(), "__proto__", "read"), "ask");
+  assert.equal(decide(policy(), "constructor", "act"), "ask");
+  assert.equal(decide(policy({ deny: ["__proto__"] }), "__proto__", "read"), "deny");
+});
