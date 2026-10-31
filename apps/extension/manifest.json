@@ -7,9 +7,5 @@
   "permissions": ["debugger", "tabs", "tabGroups", "scripting", "storage", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "sw.js", "type": "module" },
-  "options_page": "options.html",
-  "content_scripts": [
-    { "matches": ["<all_urls>"], "js": ["overlay.js"], "run_at": "document_idle", "all_frames": false },
-    { "matches": ["<all_urls>"], "js": ["ax.js"], "run_at": "document_start", "all_frames": false }
-  ]
+  "options_page": "options.html"
 }

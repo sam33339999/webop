@@ -1,4 +1,7 @@
 // Accessibility-tree content script: builds a text AX tree and hands out stable `ref_N` handles for elements.
+// Injected on demand (and again after reloads); the flag keeps a second injection into the same document inert.
+if (!(window as unknown as Record<string, unknown>).__webopAx) {
+(window as unknown as Record<string, unknown>).__webopAx = true;
 type AxMessage =
   | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number; ref_base?: number }
   | { type: "webop:ref_point"; ref: string }
@@ -298,3 +301,4 @@ chrome.runtime.onMessage.addListener((msg: AxMessage, _sender, sendResponse) => 
   }
   return false;
 });
+}

@@ -1,4 +1,7 @@
 // Phantom cursor and glow overlay. Lives in a closed-style shadow root so page CSS cannot touch it.
+// Injected on demand (and again after reloads); the flag keeps a second injection into the same document inert.
+if (!(window as unknown as Record<string, unknown>).__webopOverlay) {
+(window as unknown as Record<string, unknown>).__webopOverlay = true;
 type OverlayMessage =
   | { type: "webop:cursor"; x: number; y: number }
   | { type: "webop:overlay"; hidden: boolean }
@@ -41,3 +44,4 @@ chrome.runtime.onMessage.addListener((msg: OverlayMessage, _sender, sendResponse
   }
   return false;
 });
+}
