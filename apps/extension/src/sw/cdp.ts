@@ -20,6 +20,10 @@ const pending = new Map<number, Set<(e: CdpError) => void>>();
 const lastDetach = new Map<number, { reason: string; at: number }>();
 const detachWaiters = new Map<number, Set<() => void>>();
 const CANCEL_GRACE_MS = 100;
+/** Tabs a stop just released: nothing may re-attach to them until a call that started after the stop takes its turn. */
+const halted = new Set<number>();
+/** Tabs whose debugger bar the user cancelled while no command was waiting; the next call on them says so once. */
+const detachNotices = new Set<number>();
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
 export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
@@ -44,7 +48,24 @@ function sessionClosed(): CdpError {
   return new CdpError("tab_not_in_session", "This tab is no longer controlled by the session (the session ended or the tab was closed).");
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => { inputCounts.delete(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { inputCounts.delete(tabId); halted.delete(tabId); detachNotices.delete(tabId); });
+
+export function stoppedError(): CdpError {
+  return new CdpError("stopped_by_user", "Not performed: the user pressed stop.");
+}
+
+/** After a stop: refuse to attach (and so to send anything) to the tab until `resumeTab`. */
+export function haltTab(tabId: number): void {
+  halted.add(tabId);
+}
+export function resumeTab(tabId: number): void {
+  halted.delete(tabId);
+}
+
+/** True once after the user cancelled the debugger bar on this tab and no running command had been told yet. */
+export function takeDetachNotice(tabId: number): boolean {
+  return detachNotices.delete(tabId);
+}
 
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
   detachListeners.push(cb);
@@ -57,6 +78,7 @@ export function handleDetach(tabId: number, reason: string): void {
   lastDetach.set(tabId, { reason, at: Date.now() });
   for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();
   const waiting = pending.get(tabId);
+  if (reason === "canceled_by_user" && !(waiting && waiting.size > 0)) detachNotices.add(tabId);
   if (waiting && reason === "canceled_by_user") {
     for (const reject of [...waiting]) {
       reject(new CdpError("detached_by_user", "The user closed the debugging session for this tab. Retry to re-attach."));
@@ -115,6 +137,7 @@ export function takeFreshAttach(tabId: number): boolean {
 
 export async function attach(tabId: number): Promise<void> {
   if (!mayControl(tabId)) throw sessionClosed();
+  if (halted.has(tabId)) throw stoppedError();
   if (attached.has(tabId)) return;
   let inflight = attaching.get(tabId);
   if (!inflight) {

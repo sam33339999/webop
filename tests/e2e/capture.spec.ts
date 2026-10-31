@@ -78,6 +78,9 @@ test("debugger detach by user -> detached_by_user, then reattach", async () => {
   const tab_id = await openTab(sw, `${baseUrl}/button.html`);
   imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
   await sw.evaluate((id) => (globalThis as any).__webop.simulateDetach(id, "canceled_by_user"), tab_id);
+  const next = await call(sw, "computer", { action: "screenshot", tab_id });
+  assert.ok("error" in next);
+  assert.equal(next.error.code, "detached_by_user");
   imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
 });
 

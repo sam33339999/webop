@@ -1,10 +1,10 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, inputsSentTo, send, timeouts } from "./cdp.ts";
+import { CdpError, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
+import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { accessState, askInBackground, deniedError, isSiteReadable, requireAccess } from "./permissions.ts";
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
@@ -195,12 +195,20 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
 
 /** Nothing state-changing may start once the call's deadline has passed: the caller has already been told it failed. */
 function assertBeforeDeadline(ctx: CallContext): void {
+  if (ctx.stopped()) throw stoppedError();
   if (ctx.signal.aborted) {
     throw new CdpError("timeout", "Not performed: the caller cancelled this call.");
   }
   if (Date.now() > ctx.deadline) {
     throw new CdpError("timeout", "Not performed: the tab was busy with an earlier call past this call's deadline.");
   }
+}
+
+/** After a stop, whatever went wrong in the call is the stop (a detach or a declined prompt is how it showed up). */
+function viaStop(e: unknown, ctx: CallContext): unknown {
+  if (!ctx.stopped()) return e;
+  if (e instanceof CdpError && (e.code === "stopped_by_user" || e.code === "detached_by_user")) return e;
+  return stoppedError();
 }
 
 /** A blocked page (dialog, long script) must fail fast with "Not performed" instead of queueing input that lands later. */
@@ -389,6 +397,11 @@ async function withTab<T>(tabId: number, ctx: CallContext, fn: () => Promise<T>)
   await prev;
   try {
     assertBeforeDeadline(ctx);
+    // This call started after the last stop, so the tab may be attached to again.
+    resumeTab(tabId);
+    if (takeDetachNotice(tabId)) {
+      throw new CdpError("detached_by_user", "Not performed: the user stopped debugging this tab; retry to re-attach.");
+    }
     return await fn();
   } finally {
     release();
@@ -453,6 +466,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         // or declined site must see no webop activity at all. A deny answers here without any page call.
         await gate(call.session_id, ctx, first, "act", { tabId, marker: markerFor(action, tabId, call.args), what: "no input was sent" });
       }
+      if (performed) void showGlow(call.session_id, tabId);
       const authorizedUrl = first;
       const assertSameSite = async (): Promise<void> => {
         const { url, pendingUrl } = await tabUrls(tabId);
@@ -486,6 +500,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         }
         await assertLive(call.session_id);
         await recheck(call.session_id, tabId, performed);
+        if (ctx.stopped()) throw stoppedError();
         let shot: Awaited<ReturnType<typeof screenshot>>;
         try {
           shot = await screenshot(tabId);
@@ -498,14 +513,17 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
         }
         await recheck(call.session_id, tabId, performed);
-        const { block, ctx } = shot;
-        return { content: [{ type: "text", text: `Screenshot ${ctx.screenshotWidth}x${ctx.screenshotHeight} px; use this frame for coordinates.` }, block] };
-      } catch (e) {
+        // The user may have pressed stop while we were busy; the result is withheld.
+        if (ctx.stopped()) throw stoppedError();
+        const { block, ctx: shotCtx } = shot;
+        return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
+      } catch (caught) {
+        const e = viaStop(caught, ctx);
         // Once input has gone out, a failure no longer means "nothing happened".
         if (inputsSentTo(tabId) === inputsBefore) throw e;
         const prefix = "The action may have been partially or fully performed: ";
         const code = e instanceof CdpError ? e.code : "internal";
-        const message = e instanceof Error ? e.message : String(e);
+        const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
         if (message.includes("WAS performed")) throw e;
         throw new CdpError(code, prefix + message);
       }
@@ -542,8 +560,16 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
   const { ctx, close } = openCallContext(call.session_id, call.id);
   try {
-    return { ...base, ...(await run(call, ctx)) };
-  } catch (e) {
+    const outcome = await run(call, ctx);
+    // A stop that landed while the call was finishing: the result is not handed back.
+    if (ctx.stopped()) {
+      // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
+      const readOnly = call.tool === "read_page" || call.tool === "tabs_list";
+      throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
+    }
+    return { ...base, ...outcome };
+  } catch (caught) {
+    const e = viaStop(caught, ctx);
     if (e instanceof CdpError) return { ...base, error: { code: e.code, message: e.message } };
     return { ...base, error: { code: "internal", message: e instanceof Error ? e.message : String(e) } };
   } finally {

@@ -2,7 +2,7 @@ import { devFaults, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { afterLoad, devHooks, dispatch } from "./tools.ts";
-import { adoptTab, closeSession, isOwned } from "./sessions.ts";
+import { adoptTab, closeSession, isOwned, openSession, stopEpoch, stopSessionsOwning } from "./sessions.ts";
 import { ask, promptTimeouts } from "./prompt.ts";
 import { grant, requireAccess, migrateAllowList, rearmReady, revokeSite } from "./permissions.ts";
 import { cancelCall, openCallContext, PENDING_MARGIN_MS, setPendingSink } from "./callctx.ts";
@@ -31,6 +31,10 @@ chrome.runtime.onMessage.addListener((msg: { type?: string; site?: unknown }, se
   if (msg?.type === "webop:revoke" && typeof msg.site === "string" && sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL("options.html")) {
     revokeSite(msg.site).then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
     return true;
+  }
+  // Stop button in the overlay of an owned tab (a content script of ours, so `sender.tab` is set).
+  if (msg?.type === "webop:stop" && sender.id === chrome.runtime.id && sender.tab?.id !== undefined) {
+    void stopSessionsOwning(sender.tab.id);
   }
   return false;
 });
@@ -76,5 +80,5 @@ if (__DEV__) {
     const id = opts?.closeSession;
     devFaults.beforeFail = id === undefined ? undefined : () => closeSession(id);
   };
-  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks };
+  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, openSession, stopEpoch, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks };
 }

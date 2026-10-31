@@ -1,9 +1,12 @@
-import { cancelSession } from "./callctx.ts";
-import { ensureInjected } from "./inject.ts";
-import { CdpError, detach, setTabGuard } from "./cdp.ts";
+import { bumpStopEpoch, cancelSession, stopEpochOf } from "./callctx.ts";
+import { ensureInjected, sendWithInject } from "./inject.ts";
+import { CdpError, detach, haltTab, onDetached, setTabGuard } from "./cdp.ts";
 import { abortBackgroundAsks, revokeSessionGrants } from "./permissions.ts";
 
 const COLORS = ["blue", "purple", "cyan", "green", "orange", "pink", "red", "yellow"] as const;
+const GLOW_COLORS: Record<(typeof COLORS)[number], string> = {
+  blue: "#3b82f6", purple: "#a855f7", cyan: "#06b6d4", green: "#22c55e", orange: "#f97316", pink: "#ec4899", red: "#ef4444", yellow: "#eab308",
+};
 const STORE_KEY = "webop.sessions";
 
 interface SessionState {
@@ -35,13 +38,22 @@ async function load(): Promise<Store> {
     const saved = r[STORE_KEY] as Store | undefined;
     const loaded: Store = saved && typeof saved.created === "number" ? saved : { created: 0, sessions: {}, closed: [] };
     loaded.closed ??= [];
-    return (store = loaded);
+    store = loaded;
+    updateBadge(loaded);
+    return loaded;
   });
   return loading;
 }
 
 async function persist(s: Store): Promise<void> {
   await chrome.storage.session.set({ [STORE_KEY]: s });
+  updateBadge(s);
+}
+
+/** The toolbar badge counts the sessions the native host opened (the ones an agent is driving). */
+function updateBadge(s: Store): void {
+  const n = Object.values(s.sessions).filter((st) => st.host).length;
+  chrome.action.setBadgeText({ text: n > 0 ? String(n) : "" }).catch(() => {});
 }
 
 function sessionClosedError(): CdpError {
@@ -113,6 +125,53 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
 export async function closeSession(session_id: string): Promise<void> {
   cancelSession(session_id);
   await endSessions((id) => id === session_id, [session_id]);
+}
+
+export const stopEpoch = stopEpochOf;
+
+/**
+ * The user pressed stop: running and queued calls of the session fail with stopped_by_user, unanswered questions are
+ * dropped, once-grants are revoked and every tab is released. The session itself stays open, so the agent's next call
+ * simply continues (and asks again where it needs to).
+ */
+export async function stopSession(session_id: string): Promise<void> {
+  // Synchronous part first: everything from here on already counts as "after the stop".
+  bumpStopEpoch(session_id);
+  cancelSession(session_id);
+  abortBackgroundAsks(session_id);
+  const tabIds = await locked((s) => {
+    const ids = [...(s.sessions[session_id]?.tabIds ?? [])];
+    for (const id of ids) haltTab(id);
+    return ids;
+  });
+  await Promise.allSettled([
+    ...tabIds.map(async (id) => {
+      await detach(id);
+      chrome.tabs.sendMessage(id, { type: "webop:glow", on: false, color: "" }, { frameId: 0 }).catch(() => {});
+    }),
+    revokeSessionGrants(session_id),
+  ]);
+}
+
+const owning = (s: Store, tabId: number): string[] =>
+  Object.entries(s.sessions).filter(([, st]) => st.tabIds.includes(tabId)).map(([id]) => id);
+
+/** Stop button in a tab's overlay: stops whichever sessions own that tab. */
+export async function stopSessionsOwning(tabId: number): Promise<void> {
+  // With the store in memory the stop takes effect synchronously; otherwise load it first.
+  const ids = store ? owning(store, tabId) : await locked((s) => owning(s, tabId));
+  await Promise.all(ids.map(stopSession));
+}
+
+// Cancelling the "is debugging this browser" bar is the user pressing stop for whoever drives that tab.
+onDetached((tabId, reason) => {
+  if (reason === "canceled_by_user") void stopSessionsOwning(tabId);
+});
+
+/** Lights the session's glow (and with it the stop button) on a tab it is about to act on. Best effort. */
+export async function showGlow(session_id: string, tabId: number): Promise<void> {
+  const color = await locked((s) => GLOW_COLORS[s.sessions[session_id]?.color ?? "blue"]);
+  await sendWithInject(tabId, { type: "webop:glow", on: true, color }, isOwned).catch(() => {});
 }
 
 /** Sessions belong to one host connection; when that connection ends (or a new one starts) they all go. */

@@ -7,5 +7,6 @@
   "permissions": ["debugger", "tabs", "tabGroups", "scripting", "storage", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "sw.js", "type": "module" },
+  "action": {},
   "options_page": "options.html"
 }

@@ -8,6 +8,8 @@ export const PENDING_MARGIN_MS = 10_000;
 export interface CallContext {
   /** Aborted when the host relays `tool_cancel` (the agent gave up); pass it to `ask()`. */
   readonly signal: AbortSignal;
+  /** True once the user pressed stop (or cancelled the debugger bar) after this call started. */
+  stopped(): boolean;
   /** Absolute time after which nothing state-changing may start. Starts at call time + `callDeadlineMs`. */
   deadline: number;
   /** Tells the agent side the call is waiting on the user: its timeout restarts at `extendMs` + its own call timeout. */
@@ -23,6 +25,15 @@ export function setPendingSink(s: Sink): void {
   sink = s;
 }
 
+const epochs = new Map<string, number>();
+/** How many times the user stopped this session; calls remember the value they started under. */
+export function stopEpochOf(session_id: string): number {
+  return epochs.get(session_id) ?? 0;
+}
+export function bumpStopEpoch(session_id: string): void {
+  epochs.set(session_id, stopEpochOf(session_id) + 1);
+}
+
 const live = new Map<string, { ac: AbortController; session_id: string }>();
 const keyOf = (session_id: string, id: string): string => JSON.stringify([session_id, id]);
 
@@ -31,8 +42,10 @@ export function openCallContext(session_id: string, id: string): { ctx: CallCont
   const key = keyOf(session_id, id);
   const entry = { ac, session_id };
   live.set(key, entry);
+  const epoch = stopEpochOf(session_id);
   const ctx: CallContext = {
     signal: ac.signal,
+    stopped: () => stopEpochOf(session_id) !== epoch,
     deadline: Date.now() + timeouts.callDeadlineMs,
     notifyPending(extendMs) {
       if (ac.signal.aborted) return;
