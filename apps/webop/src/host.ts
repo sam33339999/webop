@@ -8,6 +8,8 @@ import { encodeFrame, FrameDecoder } from "./framing.ts";
 import { readLines, writeLine } from "./ndjson.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
 
+const MAX_NM_MESSAGE_BYTES = 1_048_576;
+
 type Hello = Extract<ExtToHost, { type: "hello" }>;
 
 function isObj(m: unknown): m is Record<string, unknown> {
@@ -40,6 +42,7 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
       // logging must never break the host (and never touch stdout)
     }
   };
+  output.on("error", (e) => log(`output error: ${e.message}`));
   const sendToExt = (msg: HostToExt): void => {
     if (!output.destroyed && output.writable) output.write(encodeFrame(msg));
   };
@@ -109,7 +112,14 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
         return;
       }
       if (m.type === "call" && typeof m.id === "string" && typeof m.tool === "string") {
-        sendToExt({ type: "tool_call", id: m.id, session_id: sessionId, tool: m.tool, args: isObj(m.args) ? m.args : {} } as HostToExt);
+        const call = { type: "tool_call", id: m.id, session_id: sessionId, tool: m.tool, args: isObj(m.args) ? m.args : {} } as HostToExt;
+        const frame = encodeFrame(call);
+        if (frame.length - 4 > MAX_NM_MESSAGE_BYTES) {
+          log(`rejected oversize tool_call ${m.id} (${frame.length - 4} bytes)`);
+          writeLine(sock, { type: "result", id: m.id, error: { code: "invalid_args", message: "Tool arguments exceed the 1 MB Native Messaging limit." } });
+          return;
+        }
+        if (!output.destroyed && output.writable) output.write(frame);
       } else {
         log(`dropped unknown client message type ${String(m.type)}`);
       }

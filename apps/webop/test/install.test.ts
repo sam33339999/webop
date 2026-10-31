@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { install, uninstall } from "../src/install.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "wi-"));
@@ -38,4 +40,33 @@ test("uninstall removes both", () => {
   uninstall({ browserDir, root });
   assert.equal(fs.existsSync(manifestPath), false);
   assert.equal(fs.existsSync(wrapperPath), false);
+});
+
+const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const runCli = (args: string[], root: string) =>
+  spawnSync(process.execPath, [cli, ...args], { encoding: "utf8", env: { ...process.env, WEBOP_ROOT: root } });
+
+test("t_uninstall_removes_files: cli uninstall removes files and prints paths", () => {
+  const browserDir = tmp();
+  const root = tmp();
+  const { manifestPath, wrapperPath } = install({ browserDir, root, extensionId: "x", webopCommand: ["node", "w.mjs"] });
+  const r = runCli(["uninstall", "--browser-dir", browserDir], root);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.existsSync(manifestPath), false);
+  assert.equal(fs.existsSync(wrapperPath), false);
+  assert.ok(r.stdout.includes(manifestPath));
+  assert.ok(r.stdout.includes(wrapperPath));
+});
+
+test("install prints pasteable opencode config with absolute node and script paths", () => {
+  const browserDir = tmp();
+  const root = tmp();
+  const r = runCli(["install", "--browser-dir", browserDir], root);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes('"command": ["/'), r.stdout);
+  const line = r.stdout.split("\n").find((l) => l.includes('"command"'))!;
+  const cmd = JSON.parse(`{${line.trim().replace(/,$/, "")}}`).command as string[];
+  assert.equal(cmd[0], process.execPath);
+  assert.ok(path.isAbsolute(cmd[1]));
+  assert.equal(cmd[2], "mcp");
 });
