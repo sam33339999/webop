@@ -1,4 +1,4 @@
-import { cancelAll, cancelSession } from "./callctx.ts";
+import { cancelSession } from "./callctx.ts";
 import { ensureInjected } from "./inject.ts";
 import { CdpError, detach, setTabGuard } from "./cdp.ts";
 import { revokeSessionGrants } from "./permissions.ts";
@@ -116,7 +116,8 @@ export async function closeSession(session_id: string): Promise<void> {
 
 /** Sessions belong to one host connection; when that connection ends (or a new one starts) they all go. */
 export async function closeHostSessions(): Promise<void> {
-  cancelAll();
+  // Only host-driven sessions go; abort their in-flight calls first (nobody is waiting for them any more).
+  for (const [id, st] of Object.entries(store?.sessions ?? {})) if (st.host) cancelSession(id);
   await endSessions((_id, st) => st.host);
 }
 

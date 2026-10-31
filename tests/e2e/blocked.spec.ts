@@ -97,3 +97,30 @@ test("t_queued_probe: with prod-like ordering (send < deadline) the liveness pro
   assert.match(second.message, /^Not performed: the page is not responding/);
   assert.equal(await page.evaluate(() => document.title), "count:0", "the queued click never landed");
 });
+
+test("t_cancel_during_probe: a cancel while the responsiveness probe waits sends no input", async () => {
+  const { h, tab_id, page, incCoordinate } = await setup(6000, { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 4000 });
+  const busy = page.evaluate((ms) => { const t = Date.now(); while (Date.now() - t < ms) {} }, 1500);
+  await sleep(100);
+  const run = h.sw.evaluate(([c, id]) => (globalThis as any).__webop.dispatch({ id, session_id: "test", tool: "computer", args: { action: "left_click", tab_id: c[0], coordinate: c[1] } }), [[tab_id, incCoordinate], "n1"] as const);
+  await sleep(400);
+  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("test", "n1"));
+  const e = errOf(await run as R);
+  await busy;
+  assert.equal(e.code, "timeout");
+  assert.match(e.message, /^Not performed: the caller cancelled/);
+  assert.equal(await page.evaluate(() => document.title), "count:0");
+});
+
+test("t_cancelled_tabs_create_creates_no_tab", async () => {
+  const h = await open();
+  const before = await h.sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length));
+  const r = await h.sw.evaluate(async (url) => {
+    const w = globalThis as any;
+    const p = w.__webop.dispatch({ id: "n2", session_id: "test", tool: "tabs_create", args: { url } });
+    w.__webop.cancelCall("test", "n2");
+    return p;
+  }, `${h.baseUrl}/button.html`);
+  assert.equal(errOf(r as R).code, "timeout");
+  assert.equal(await h.sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length)), before);
+});

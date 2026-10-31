@@ -54,8 +54,3 @@ export function cancelCall(session_id: string, id: string): void {
 export function cancelSession(session_id: string): void {
   for (const e of live.values()) if (e.session_id === session_id) e.ac.abort();
 }
-
-/** The host link ended: nobody is waiting for any call any more. */
-export function cancelAll(): void {
-  for (const e of live.values()) e.ac.abort();
-}

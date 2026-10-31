@@ -60,7 +60,11 @@ if (__DEV__) {
       ctx.resetDeadline();
       const deadlineResetAfter = ctx.deadline > before;
       // Like a gated tool: the action runs only when the user said yes and the call was not abandoned meanwhile.
-      if (then && answer !== "deny" && !ctx.signal.aborted) return { answer, deadlineResetAfter, result: await dispatch(then) };
+      if (then && answer !== "deny" && !ctx.signal.aborted) {
+        // Hand the id over to the follow-up call's own context so a later cancel reaches it.
+        close();
+        return { answer, deadlineResetAfter, result: await dispatch(then) };
+      }
       return { answer, deadlineResetAfter };
     } finally {
       close();

@@ -309,11 +309,13 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "tabs_create") {
     const url = urlArg(call.args);
     await checkSite(url);
+    assertBeforeDeadline(ctx);
     const tab = await createTab(call.session_id, url);
     const tab_id = tab.id as number;
     await afterLoad(tab_id, async () => {});
     try {
       await checkSite(await currentUrl(tab_id));
+      assertBeforeDeadline(ctx);
     } catch (e) {
       await chrome.tabs.remove(tab_id).catch(() => {});
       throw e;
@@ -324,6 +326,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     // Deliberately outside withTab: closing must work while the page is blocked; queued calls then fail on their own (tab gone).
     await assertOwned(call.session_id, tabId);
+    assertBeforeDeadline(ctx);
     await chrome.tabs.remove(tabId);
     return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
   }
@@ -340,6 +343,8 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       if (performed) {
         assertBeforeDeadline(ctx);
         await assertResponsive(tabId);
+        // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
+        assertBeforeDeadline(ctx);
       }
       const inputsBefore = inputsSentTo(tabId);
       try {
