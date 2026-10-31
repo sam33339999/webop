@@ -7,6 +7,8 @@ const opened: Launched[] = [];
 async function open() {
   const h = await launch();
   opened.push(h);
+  // These tests treat the second origin as a refused site (ask flows live in access.spec.ts).
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.deny": ["127.0.0.1"] }));
   return h;
 }
 after(async () => { for (const h of opened) await h.close(); });
@@ -91,7 +93,7 @@ test("tabs_create to non-allowlisted or non-web url is denied", async () => {
   const e = errOf(await call(sw, "tabs_create", { url: `${altUrl}/button.html` }));
   assert.equal(e.code, "permission_denied");
   assert.match(e.message, /127\.0\.0\.1/);
-  assert.match(e.message, /add it in webop options/);
+  assert.match(e.message, /deny list in webop options/);
   assert.equal(errOf(await call(sw, "tabs_create", { url: "chrome://version" })).code, "permission_denied");
   assert.equal(errOf(await call(sw, "tabs_create", { url: "about:blank" })).code, "permission_denied");
   assert.deepEqual(JSON.parse(textOf(await call(sw, "tabs_list", {}))), []);

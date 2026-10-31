@@ -1,6 +1,7 @@
 import { siteOf } from "@webop/core/domain";
-import { covers, decide, type Level, type Policy, type Scope } from "@webop/core/grants";
+import { decide, type Level, type Policy, type Scope } from "@webop/core/grants";
 import { CdpError } from "./cdp.ts";
+import { ask } from "./prompt.ts";
 
 const GRANTS_KEY = "webop.grants";
 const DENY_KEY = "webop.deny";
@@ -128,26 +129,61 @@ export async function isSiteReadable(session_id: string, url: string): Promise<b
   return decide(await loadPolicy(session_id), siteOf(url), "read") === "allow";
 }
 
-/**
- * Interim gate until Task 5 replaces it with requireAccess: throws permission_denied unless the site's
- * permanent grants cover `act` (same behaviour as M3's allowlist).
- */
-export async function checkSite(url: string): Promise<void> {
-  await ready;
-  const site = siteOf(url);
-  const always = await readAlways();
-  const denied = (await chrome.storage.local.get(DENY_KEY))[DENY_KEY];
-  const isDenied = site !== null && Array.isArray(denied) && denied.includes(site);
-  if (!isDenied && site !== null && covers(levelsOf(always, site), "act")) return;
-  const what = site === null ? "this page (not an http(s) site)" : `site "${site}"`;
-  throw new CdpError("permission_denied", `Access to ${what} is not allowed; add it in webop options to let the agent use it.`);
+export interface AccessRequest {
+  session_id: string;
+  client_name: string;
+  url: string;
+  level: Level;
+  tabId?: number;
+  /** Intended click position in viewport CSS px (shown to the user only). */
+  marker?: { x: number; y: number };
+  signal?: AbortSignal;
+  /** Called right before the user is asked (the caller extends its timeout / marks the call as waiting). */
+  beforeAsk?: () => void;
+  /** Completes "Not performed: ..." in the refusal message. */
+  what?: string;
 }
 
-export async function isSiteAllowed(url: string): Promise<boolean> {
-  try {
-    await checkSite(url);
-    return true;
-  } catch {
-    return false;
+/** What the grant model says about `url` right now, without asking anyone. */
+export async function accessState(session_id: string, url: string, level: Level): Promise<"allow" | "deny" | "ask"> {
+  return decide(await loadPolicy(session_id), siteOf(url), level);
+}
+
+function siteLabel(site: string | null): string {
+  return site === null ? "this page (not an http(s) site)" : `site "${site}"`;
+}
+
+/** permission_denied for a refused site (deny list, non-web page); `note` says what was or was not performed. */
+export function deniedError(url: string, note = "Not performed"): CdpError {
+  const site = siteOf(url);
+  const why = site === null ? "is not an http(s) page, which webop never touches" : "is on the deny list in webop options";
+  return new CdpError("permission_denied", `${note}: ${siteLabel(site)} ${why}.`);
+}
+
+/**
+ * Lets the call proceed only if the session holds `level` on the URL's site: allowed -> returns; deny list -> permission_denied;
+ * otherwise asks the user and persists a yes (once -> this session, always -> permanent); a no, timeout or abort -> permission_denied.
+ */
+export async function requireAccess(o: AccessRequest): Promise<void> {
+  const site = siteOf(o.url);
+  const state = decide(await loadPolicy(o.session_id), site, o.level);
+  if (state === "allow") return;
+  if (state === "deny" || site === null) throw deniedError(o.url);
+  o.beforeAsk?.();
+  const answer = await ask({ session_id: o.session_id, client_name: o.client_name, site, level: o.level, tabId: o.tabId, marker: o.marker }, o.signal);
+  if (o.signal?.aborted) throw new CdpError("timeout", "Not performed: the caller cancelled this call.");
+  if (answer === "deny") {
+    throw new CdpError("permission_denied", `Not performed: the user declined (or did not answer) ${o.level} access to ${siteLabel(site)}; ${o.what ?? "nothing was done"}.`);
   }
+  await grant(o.session_id, site, o.level, answer === "always" ? "always" : "once");
+}
+
+/** Shows the question without waiting for it (the call itself is already answered); a yes is stored for the retry. */
+export function askInBackground(o: Omit<AccessRequest, "signal" | "beforeAsk" | "what">): void {
+  void (async () => {
+    const site = siteOf(o.url);
+    if (site === null || decide(await loadPolicy(o.session_id), site, o.level) !== "ask") return;
+    const answer = await ask({ session_id: o.session_id, client_name: o.client_name, site, level: o.level, tabId: o.tabId, marker: o.marker });
+    if (answer !== "deny") await grant(o.session_id, site, o.level, answer === "always" ? "always" : "once");
+  })().catch(() => {});
 }

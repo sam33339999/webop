@@ -4,12 +4,17 @@ import { CdpError, inputsSentTo, send, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertLive, assertOwned, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
+import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
-import { checkSite, isSiteAllowed } from "./permissions.ts";
-import { openCallContext, type CallContext } from "./callctx.ts";
+import { accessState, askInBackground, deniedError, isSiteReadable, requireAccess } from "./permissions.ts";
+import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
+import { promptTimeouts } from "./prompt.ts";
+import type { Level } from "@webop/core/grants";
 
 type Outcome = { content: ContentBlock[] };
+
+/** Dev-only seams for e2e tests (see the `__webop` hook); never set in a production build. */
+export const devHooks: { afterTarget?: (tabId: number) => Promise<void> } = {};
 
 function invalid(message: string): never {
   throw new CdpError("invalid_args", message);
@@ -109,31 +114,53 @@ async function guardedTarget(tabId: number, args: Record<string, unknown>, coord
   return point;
 }
 
-async function perform(action: string, tabId: number, args: Record<string, unknown>): Promise<void> {
+/** The two checkpoints an input action passes: permission once the target is known, and a site re-read right before input. */
+interface InputGuard {
+  onTarget(marker?: Point): Promise<void>;
+  beforeInput(): Promise<void>;
+}
+
+async function perform(action: string, tabId: number, args: Record<string, unknown>, g: InputGuard): Promise<void> {
   const target = () => guardedTarget(tabId, args, "coordinate", "ref");
+  const mark = (p: [number, number]): Point => ({ x: p[0], y: p[1] });
+  /** Resolves the single target, asks for `act` with its position, and re-checks the site. */
+  const aim = async (): Promise<[number, number]> => {
+    const p = await target();
+    await g.onTarget(mark(p));
+    await g.beforeInput();
+    return p;
+  };
   switch (action) {
-    case "left_click": return click(tabId, ...(await target()));
-    case "right_click": return click(tabId, ...(await target()), { button: "right" });
-    case "double_click": return click(tabId, ...(await target()), { count: 2 });
-    case "hover": return hover(tabId, ...(await target()));
+    case "left_click": return click(tabId, ...(await aim()));
+    case "right_click": return click(tabId, ...(await aim()), { button: "right" });
+    case "double_click": return click(tabId, ...(await aim()), { count: 2 });
+    case "hover": return hover(tabId, ...(await aim()));
     case "scroll_to": {
       if (args.ref === undefined) invalid("scroll_to requires ref.");
-      await refPoint(tabId, args.ref);
+      const p = await refPoint(tabId, args.ref);
+      await g.onTarget(mark(p));
+      await g.beforeInput();
       return;
     }
     case "left_click_drag": {
       const from = await guardedTarget(tabId, args, "start_coordinate", "start_ref");
+      await g.onTarget(mark(from));
       const to = await target();
+      await g.beforeInput();
       return drag(tabId, from, to);
     }
     case "type": {
       const text = textArg(args);
       await assertNotCrossSiteFrame(tabId);
+      await g.onTarget();
+      await g.beforeInput();
       return typeText(tabId, text);
     }
     case "key": {
       const combo = textArg(args);
       await assertNotCrossSiteFrame(tabId);
+      await g.onTarget();
+      await g.beforeInput();
       try {
         return await pressKeys(tabId, combo);
       } catch (e) {
@@ -143,7 +170,7 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
       return;
     }
     case "scroll": {
-      const [x, y] = await target();
+      const [x, y] = await aim();
       const dir = args.scroll_direction;
       if (dir !== "up" && dir !== "down" && dir !== "left" && dir !== "right") invalid("scroll_direction must be up, down, left or right.");
       const amount = args.scroll_amount ?? 3;
@@ -223,10 +250,21 @@ async function currentUrl(tabId: number): Promise<string> {
   }
 }
 
-/** Ownership and allowlist gate for every tool that touches page content; runs before anything is read or sent. */
-async function authorize(session_id: string, tabId: number): Promise<void> {
-  await assertOwned(session_id, tabId);
-  await checkSite(await currentUrl(tabId));
+/**
+ * Blocks until the session holds `level` on the URL's site (asking the user when needed); the call's deadline restarts
+ * after an answer, and a cancel or an expired deadline stops the call before anything state-changing starts.
+ */
+async function gate(session_id: string, ctx: CallContext, url: string, level: Level, o: { tabId?: number; marker?: Point; what?: string } = {}): Promise<void> {
+  let asked = false;
+  await requireAccess({
+    session_id, client_name: await clientNameOf(session_id), url, level, ...o, signal: ctx.signal,
+    beforeAsk() {
+      asked = true;
+      ctx.notifyPending(promptTimeouts.askMs + PENDING_MARGIN_MS);
+    },
+  });
+  if (asked) ctx.resetDeadline();
+  assertBeforeDeadline(ctx);
 }
 
 function urlArg(args: Record<string, unknown>): string {
@@ -234,25 +272,29 @@ function urlArg(args: Record<string, unknown>): string {
   return args.url;
 }
 
-/** Resolves the history entry through CDP and checks its site BEFORE loading it. */
-async function goHistory(tabId: number, dir: "back" | "forward"): Promise<void> {
+/** Resolves the history entry through CDP so its site can be checked BEFORE loading it. */
+async function historyEntry(tabId: number, dir: "back" | "forward"): Promise<{ id: number; url: string }> {
   const h = await send<{ currentIndex: number; entries: { id: number; url: string }[] }>(tabId, "Page.getNavigationHistory");
   const entry = h.entries[h.currentIndex + (dir === "back" ? -1 : 1)];
   if (!entry) throw new CdpError("invalid_args", `Cannot go ${dir}: no such history entry.`);
-  await checkSite(entry.url);
-  await send(tabId, "Page.navigateToHistoryEntry", { entryId: entry.id });
+  return entry;
 }
 
-/** Re-checks the tab's current site after content was produced; denial withholds the content. */
-async function recheck(tabId: number, performed: boolean): Promise<void> {
+/**
+ * Re-checks the tab's current site after content was produced; content is withheld unless the session may `read` it.
+ * A site that only needs the user's approval answers permission_required and shows the question, so a retry can succeed.
+ */
+async function recheck(session_id: string, tabId: number, performed: boolean): Promise<void> {
   const url = await currentUrl(tabId);
-  try {
-    await checkSite(url);
-  } catch (e) {
-    if (!(e instanceof CdpError) || e.code !== "permission_denied") throw e;
-    const what = performed ? "The action WAS performed, but the" : "The";
-    throw new CdpError("permission_denied", `${what} tab is now on a site that is not allowed (${siteOf(url) ?? "non-web page"}); no content is returned. ${e.message}`);
+  const state = await accessState(session_id, url, "read");
+  if (state === "allow") return;
+  const site = siteOf(url) ?? "non-web page";
+  const lead = performed ? "The action WAS performed, but the" : "The";
+  if (state === "deny") {
+    throw new CdpError("permission_denied", `${lead} tab is now on a site that is not allowed (${site}); no content is returned.`);
   }
+  askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
+  throw new CdpError("permission_required", `${lead} tab is now on ${site}, which needs the user's approval; no content is returned. A prompt was shown to the user; after they allow it, retry (e.g. read_page).`);
 }
 
 /** Gives a navigation triggered by an action time to start, then waits for it to settle. */
@@ -270,16 +312,16 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
   const target = urlArg(args);
   await assertOwned(session_id, tabId);
   const history = target === "back" || target === "forward";
-  if (!history) await checkSite(target);
-  assertBeforeDeadline(ctx);
+  const entry = history ? await historyEntry(tabId, target) : undefined;
+  await gate(session_id, ctx, entry ? entry.url : target, "read", { tabId, what: "the navigation was not started" });
   // The wait is capped by the call's deadline so the extension answers before the MCP host gives up.
   const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, ctx.deadline - Date.now()));
   try {
     await afterLoad(tabId, async () => {
-      if (!history) {
-        await chrome.tabs.update(tabId, { url: target });
+      if (entry) {
+        await send(tabId, "Page.navigateToHistoryEntry", { entryId: entry.id });
       } else {
-        await goHistory(tabId, target);
+        await chrome.tabs.update(tabId, { url: target });
       }
     }, limit);
   } catch (e) {
@@ -288,8 +330,8 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
     }
     throw e;
   }
+  await recheck(session_id, tabId, true);
   const final = await currentUrl(tabId);
-  await checkSite(final);
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
@@ -323,18 +365,23 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "tabs_list") {
     // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
     const tabs = await Promise.all((await listTabs(call.session_id)).map(async (t) =>
-      (await isSiteAllowed(t.url)) ? t : { tab_id: t.tab_id, title: "", url: "(site not allowed)" }));
+      (await isSiteReadable(call.session_id, t.url)) ? t : { tab_id: t.tab_id, title: "", url: "(site not allowed)" }));
     return { content: [{ type: "text", text: JSON.stringify(tabs) }] };
   }
   if (call.tool === "tabs_create") {
     const url = urlArg(call.args);
-    await checkSite(url);
-    assertBeforeDeadline(ctx);
+    await gate(call.session_id, ctx, url, "read", { what: "no tab was opened" });
     const tab = await createTab(call.session_id, url);
     const tab_id = tab.id as number;
     await afterLoad(tab_id, async () => {});
     try {
-      await checkSite(await currentUrl(tab_id));
+      const landed = await currentUrl(tab_id);
+      const state = await accessState(call.session_id, landed, "read");
+      if (state === "deny") throw deniedError(landed, "The tab was closed");
+      if (state === "ask") {
+        askInBackground({ session_id: call.session_id, client_name: await clientNameOf(call.session_id), url: landed, level: "read" });
+        throw new CdpError("permission_required", `The tab was closed because it ended up on ${siteOf(landed)}, which needs the user's approval. A prompt was shown to the user; after they allow it, retry tabs_create.`);
+      }
       assertBeforeDeadline(ctx);
     } catch (e) {
       await chrome.tabs.remove(tab_id).catch(() => {});
@@ -358,22 +405,43 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, async () => {
-      await authorize(call.session_id, tabId);
+      await assertOwned(call.session_id, tabId);
       const performed = action !== "screenshot";
-      if (performed) {
+      const first = await currentUrl(tabId);
+      if (!performed) {
+        await gate(call.session_id, ctx, first, "read", { tabId });
+      } else {
+        // A refused site must never be touched: fail before the probe, the target lookup or any prompt.
+        if ((await accessState(call.session_id, first, "act")) === "deny") throw deniedError(first);
         assertBeforeDeadline(ctx);
         await assertResponsive(tabId);
         // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
         assertBeforeDeadline(ctx);
       }
+      let authorizedUrl = first;
+      const guard: InputGuard = {
+        async onTarget(marker) {
+          authorizedUrl = await currentUrl(tabId);
+          await gate(call.session_id, ctx, authorizedUrl, "act", { tabId, marker, what: "no input was sent" });
+        },
+        async beforeInput() {
+          if (__DEV__) await devHooks.afterTarget?.(tabId);
+          const now = await currentUrl(tabId);
+          const was = siteOf(authorizedUrl);
+          if (siteOf(now) !== was) {
+            throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(now) ?? now} before input was sent.`);
+          }
+          assertBeforeDeadline(ctx);
+        },
+      };
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
-          await perform(action, tabId, call.args);
+          await perform(action, tabId, call.args, guard);
           await settle(tabId);
         }
         await assertLive(call.session_id);
-        await recheck(tabId, performed);
+        await recheck(call.session_id, tabId, performed);
         let shot: Awaited<ReturnType<typeof screenshot>>;
         try {
           shot = await screenshot(tabId);
@@ -381,11 +449,11 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           // The action already went out in full; a failed capture must not read as a failed action.
           if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
           await assertLive(call.session_id);
-          await recheck(tabId, performed);
+          await recheck(call.session_id, tabId, performed);
           const why = e instanceof Error ? e.message : String(e);
           return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
         }
-        await recheck(tabId, performed);
+        await recheck(call.session_id, tabId, performed);
         const { block, ctx } = shot;
         return { content: [{ type: "text", text: `Screenshot ${ctx.screenshotWidth}x${ctx.screenshotHeight} px; use this frame for coordinates.` }, block] };
       } catch (e) {
@@ -401,14 +469,15 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   }
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, ctx, () => readPage(call));
+    return withTab(tabId, ctx, () => readPage(call, ctx));
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
 
-async function readPage(call: ToolCall): Promise<Outcome> {
+async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const tabId = tabIdOf(call.args);
-  await authorize(call.session_id, tabId);
+  await assertOwned(call.session_id, tabId);
+  await gate(call.session_id, ctx, await currentUrl(tabId), "read", { tabId });
   const { filter, ref_id, max_chars } = call.args;
   if (filter !== undefined && filter !== "interactive") invalid('filter must be "interactive".');
   if (ref_id !== undefined && typeof ref_id !== "string") invalid("ref_id must be a string.");
@@ -421,7 +490,7 @@ async function readPage(call: ToolCall): Promise<Outcome> {
   if ("error" in r) throw new CdpError("stale_ref", `${String(ref_id)} no longer exists; call read_page again to get fresh refs.`);
   await chrome.storage.session.set({ [key]: Math.max(ref_base, r.counter) });
   await assertLive(call.session_id);
-  await recheck(tabId, false);
+  await recheck(call.session_id, tabId, false);
   return { content: [{ type: "text", text: r.text }] };
 }
 

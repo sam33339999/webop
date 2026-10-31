@@ -61,23 +61,25 @@ test("t_options_js_toggle: checkbox writes webop.js_enabled", async () => {
 const sw = <T>(h: Launched, fn: string, ...a: unknown[]): Promise<T> =>
   h.sw.evaluate(([f, args]) => (globalThis as any).__webop[f](...args), [fn, a] as const) as Promise<T>;
 
-test("t_deny_beats_always: checkSite rejects a denied site despite a permanent act grant", async () => {
+const access = (h: Launched) => ({ session_id: "g", client_name: "g", url: `${h.baseUrl}/button.html`, level: "act" });
+
+test("t_deny_beats_always: requireAccess rejects a denied site despite a permanent act grant", async () => {
   const h = await open();
   await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": { localhost: ["act"] }, "webop.deny": ["localhost"] }));
-  await assert.rejects(sw(h, "checkSite", `${h.baseUrl}/button.html`), /permission_denied|not allowed/);
+  await assert.rejects(sw(h, "requireAccess", access(h)), /deny list/);
   await h.sw.evaluate(() => chrome.storage.local.set({ "webop.deny": [] }));
-  await sw(h, "checkSite", `${h.baseUrl}/button.html`);
+  await sw(h, "requireAccess", access(h));
 });
 
 test("t_ready_gate: a read right after SW start sees migrated grants", async () => {
   const h = await open();
   await h.sw.evaluate(() => chrome.storage.local.set({ "webop.grants": {}, "webop.allow": ["localhost"] }));
-  // rearm starts the migration; checkSite is called immediately without awaiting it.
-  const ok = await h.sw.evaluate(async (u) => {
+  // rearm starts the migration; requireAccess is called immediately without awaiting it.
+  const ok = await h.sw.evaluate(async (req) => {
     const w = (globalThis as any).__webop;
     void w.rearmReady();
-    try { await w.checkSite(u); return true; } catch { return false; }
-  }, `${h.baseUrl}/button.html`);
+    try { await w.requireAccess(req); return true; } catch { return false; }
+  }, access(h));
   assert.equal(ok, true);
 });
 

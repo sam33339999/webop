@@ -219,3 +219,8 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (__DEV__) console.warn("webop: content script injection failed", tabId, e);
   });
 });
+
+/** Name the client gave when it opened the session (what the permission prompt shows); the id itself for implicit sessions. */
+export function clientNameOf(session_id: string): Promise<string> {
+  return locked((s) => s.sessions[session_id]?.client_name ?? session_id);
+}
