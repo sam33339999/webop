@@ -40,3 +40,7 @@ test("existing keys still work and unknown ones throw", () => {
   assert.equal(parseCombo("ctrl+a").key.code, "KeyA");
   assert.throws(() => parseCombo("nope"), /Unsupported key/);
 });
+
+test("prototype member names are not keys", () => {
+  for (const t of ["constructor", "toString", "__proto__", "hasOwnProperty"]) assert.throws(() => parseCombo(t), /Unsupported key/, t);
+});

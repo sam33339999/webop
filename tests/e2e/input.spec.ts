@@ -176,3 +176,33 @@ test("t_action_ok_screenshot_fails: a failed capture after a delivered click is 
   assert.match(t.text, /^Action performed; screenshot failed: /);
   assert.equal(await page.title(), "clicked:true");
 });
+
+test("t_action_ok_session_closed_during_capture: a delivered click whose session ended is an error, not success", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const page = pageOf(h, h.baseUrl, "/button.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  await h.sw.evaluate(() => (globalThis as any).__webop.failNextCapture({ closeSession: "test" }));
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("error" in r, "must not be reported as success");
+  assert.equal(r.error.code, "tab_not_in_session");
+  assert.match(r.error.message, /^The action may have been partially or fully performed: /);
+});
+
+test("t_afterload_zero_limit: limitMs <= 0 times out without calling start()", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const r = await h.sw.evaluate(async (id) => {
+    let started = false;
+    try {
+      await (globalThis as any).__webop.afterLoad(id, async () => { started = true; }, 0);
+      return { started, error: null };
+    } catch (e: any) {
+      return { started, error: { code: e.code, message: e.message } };
+    }
+  }, tab_id);
+  assert.equal(r.started, false);
+  assert.equal(r.error?.code, "timeout");
+  assert.match(r.error?.message ?? "", /^Not performed:/);
+});

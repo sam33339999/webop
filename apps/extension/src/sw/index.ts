@@ -1,6 +1,6 @@
 import { devFaults, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
-import { dispatch } from "./tools.ts";
+import { afterLoad, dispatch } from "./tools.ts";
 import { adoptTab, closeSession } from "./sessions.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
@@ -41,6 +41,10 @@ if (__DEV__) {
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
   /** Test-only: the next Page.captureScreenshot fails once. */
-  const failNextCapture = (): void => { devFaults.failNextCapture = true; };
-  (globalThis as Record<string, unknown>).__webop = { setTimeouts, failNextCapture, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
+  const failNextCapture = (opts?: { closeSession?: string }): void => {
+    devFaults.failNextCapture = true;
+    const id = opts?.closeSession;
+    devFaults.beforeFail = id === undefined ? undefined : () => closeSession(id);
+  };
+  (globalThis as Record<string, unknown>).__webop = { setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
 }

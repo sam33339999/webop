@@ -58,8 +58,7 @@ for (const [char, name, code, keyCode] of PUNCTUATION) {
 for (let n = 1; n <= 12; n++) NAMED[`f${n}`] = { key: `F${n}`, code: `F${n}`, keyCode: 111 + n };
 
 function keyFor(token: string): KeySpec {
-  const named = NAMED[token];
-  if (named) return named;
+  if (Object.hasOwn(NAMED, token)) return NAMED[token];
   if (/^[a-z]$/.test(token)) {
     return { key: token, code: `Key${token.toUpperCase()}`, keyCode: token.toUpperCase().charCodeAt(0), text: token };
   }

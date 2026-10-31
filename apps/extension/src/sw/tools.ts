@@ -164,7 +164,7 @@ async function assertResponsive(tabId: number): Promise<void> {
 const NAVIGATE_TIMEOUT_MS = 30000;
 
 /** Resolves once the tab has finished loading what `start` kicked off; rejects with `timeout` after 30 s. */
-async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs = NAVIGATE_TIMEOUT_MS): Promise<void> {
+export async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs = NAVIGATE_TIMEOUT_MS): Promise<void> {
   if (limitMs <= 0) throw new CdpError("timeout", "Not performed: the call's time budget was already spent before the navigation could start.");
   let sawLoading = false;
   let finish!: () => void;
@@ -275,6 +275,11 @@ async function navigate(session_id: string, args: Record<string, unknown>, deadl
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
+/** Errors that mean more than "the capture failed": they must never be reported as a successful action. */
+const NOT_A_CAPTURE_FAILURE: ReadonlySet<string> = new Set([
+  "detached_by_user", "stopped_by_user", "tab_not_in_session", "permission_denied", "permission_required", "security_check_failed",
+]);
+
 const tabQueues = new Map<number, Promise<void>>();
 
 /** Runs `fn` after every earlier call on the same tab has finished (FIFO), so overlay hiding, captures and input sequences never interleave. */
@@ -350,7 +355,9 @@ async function run(call: ToolCall, deadline: number): Promise<Outcome> {
           shot = await screenshot(tabId);
         } catch (e) {
           // The action already went out in full; a failed capture must not read as a failed action.
-          if (!performed) throw e;
+          if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
+          await assertLive(call.session_id);
+          await recheck(tabId, performed);
           const why = e instanceof Error ? e.message : String(e);
           return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
         }

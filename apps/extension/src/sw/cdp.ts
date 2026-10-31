@@ -23,7 +23,7 @@ const CANCEL_GRACE_MS = 100;
 export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
 const inputCounts = new Map<number, number>();
 /** Dev-only fault injection (see the `__webop` hook): makes the next `Page.captureScreenshot` fail once. */
-export const devFaults = { failNextCapture: false };
+export const devFaults: { failNextCapture: boolean; beforeFail?: () => Promise<void> } = { failNextCapture: false };
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
 let mayControl: (tabId: number) => boolean = () => true;
@@ -146,6 +146,7 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
   if (method.startsWith("Input.")) inputCounts.set(tabId, inputsSentTo(tabId) + 1);
   if (__DEV__ && method === "Page.captureScreenshot" && devFaults.failNextCapture) {
     devFaults.failNextCapture = false;
+    await devFaults.beforeFail?.();
     set.delete(abort);
     throw new CdpError("internal", "Page.captureScreenshot failed: injected fault");
   }

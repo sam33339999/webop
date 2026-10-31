@@ -124,8 +124,12 @@ test("t_real_alert: a real alert() blocks the page; the next action is refused a
   const second = errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: incAt }));
   assert.equal(second.code, "timeout");
   assert.match(second.message, /^Not performed/);
+  assert.equal(dialogs.length, 1, "no second dialog appeared");
 
   await dialogs[0].dismiss();
-  await sleep(500);
-  assert.notEqual(await page.evaluate(() => document.title), "count 1", "the refused click never landed");
+  // Poll: a late-landing click would show up as "count 1" shortly after the page unblocks.
+  for (let i = 0; i < 20; i++) {
+    assert.equal(await page.evaluate(() => document.title), "count 0", "the refused click never landed");
+    await sleep(50);
+  }
 });
