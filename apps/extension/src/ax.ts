@@ -1,7 +1,13 @@
 // Accessibility-tree content script: builds a text AX tree and hands out stable `ref_N` handles for elements.
 // Injected on demand (and again after reloads); the flag keeps a second injection into the same document inert.
-if (!(window as unknown as Record<string, unknown>).__webopAx) {
-(window as unknown as Record<string, unknown>).__webopAx = true;
+// The guard is live only while this extension context is: after an extension reload the old context is orphaned (chrome.runtime.id is gone), so a fresh injection takes over.
+type Guard = { alive: () => boolean; dispose?: () => void };
+const guardHolder = window as unknown as { __wopAx?: Guard };
+if (guardHolder.__wopAx?.alive()) {
+  // already running in this document
+} else {
+guardHolder.__wopAx?.dispose?.();
+guardHolder.__wopAx = { alive: () => !!chrome.runtime?.id };
 type AxMessage =
   | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number; ref_base?: number }
   | { type: "webop:ref_point"; ref: string }

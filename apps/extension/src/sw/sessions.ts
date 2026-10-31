@@ -139,25 +139,31 @@ async function enroll(s: Store, st: SessionState, tabId: number): Promise<void> 
   }
   if (!st.tabIds.includes(tabId)) st.tabIds.push(tabId);
   await persist(s);
-  // Best effort: a still-loading or protected page is covered by the lazy inject-on-first-use and the reload hook below.
-  await ensureInjected(tabId).catch(() => {});
 }
 
 /** Opens a background tab and puts it in the session's tab group. The caller must have checked the URL. */
 export async function createTab(session_id: string, url: string): Promise<chrome.tabs.Tab> {
-  return locked(async (s) => {
+  const tabId = await locked(async (s) => {
     if (s.closed.includes(session_id)) throw sessionClosedError();
     const st = open(s, session_id, session_id);
     const tab = await chrome.tabs.create({ url, active: false });
     if (tab.id === undefined) throw new CdpError("internal", "Created tab has no id.");
     await enroll(s, st, tab.id);
-    return await chrome.tabs.get(tab.id);
+    return tab.id;
   });
+  // Outside the lock; best effort, since a loading page is covered by the onUpdated hook and the lazy inject on first use.
+  await ensureInjected(tabId).catch(() => {});
+  return await chrome.tabs.get(tabId);
 }
 
 /** Test-only: take ownership of an existing tab (used by the dev hook so fixtures can open protected pages). */
 export async function adoptTab(session_id: string, tabId: number): Promise<void> {
   await locked(async (s) => enroll(s, open(s, session_id, session_id), tabId));
+  await ensureInjected(tabId).catch(() => {});
+}
+
+export function isOwned(tabId: number): Promise<boolean> {
+  return locked((s) => Object.values(s.sessions).some((st) => st.tabIds.includes(tabId)));
 }
 
 export async function assertOwned(session_id: string, tabId: number): Promise<void> {
@@ -195,7 +201,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status !== "complete") return;
   // Not ownedNow(): that is permissive until the store loads, and a foreign tab must never get our scripts.
-  void locked((s) => Object.values(s.sessions).some((st) => st.tabIds.includes(tabId)))
-    .then((owned) => (owned ? ensureInjected(tabId) : undefined))
-    .catch(() => {});
+  void (async () => {
+    if (!(await isOwned(tabId))) return;
+    await ensureInjected(tabId);
+    // Ownership may have ended while injecting; make sure nothing of ours stays visible.
+    if (!(await isOwned(tabId))) await chrome.tabs.sendMessage(tabId, { type: "webop:session_end" }).catch(() => {});
+  })().catch((e) => {
+    if (__DEV__) console.warn("webop: content script injection failed", tabId, e);
+  });
 });

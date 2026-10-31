@@ -1,3 +1,5 @@
+import { CdpError } from "./cdp.ts";
+
 /** Content scripts are injected only into tabs a session owns; the manifest declares none. */
 
 const SCRIPTS = ["ax.js", "overlay.js"];
@@ -11,13 +13,15 @@ export function isNoReceiver(e: unknown): boolean {
   return (e instanceof Error ? e.message : String(e)).includes("Receiving end does not exist");
 }
 
-/** Sends to the top-frame content script; if none is there yet, injects once and retries. */
-export async function sendWithInject<T>(tabId: number, msg: object): Promise<T> {
+/** Sends to the top-frame content script; if none is there yet, injects once and retries (only while `stillOwned` holds). */
+export async function sendWithInject<T>(tabId: number, msg: object, stillOwned: (tabId: number) => Promise<boolean>): Promise<T> {
   try {
     return await (chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>);
   } catch (e) {
     if (!isNoReceiver(e)) throw e;
+    if (!(await stillOwned(tabId))) throw new CdpError("tab_not_in_session", `Tab ${tabId} does not belong to a session.`);
     await ensureInjected(tabId);
+    if (!(await stillOwned(tabId))) throw new CdpError("tab_not_in_session", `Tab ${tabId} does not belong to a session.`);
     return await (chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>);
   }
 }
