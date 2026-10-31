@@ -1,5 +1,6 @@
 import type { ExtToHost, HostToExt } from "@webop/core/protocol";
 import { dispatch } from "./tools.ts";
+import { cancelCall, setPendingSink } from "./callctx.ts";
 import { closeHostSessions, closeSession, openSession } from "./sessions.ts";
 
 const HOST = "com.webop.native_host";
@@ -27,11 +28,14 @@ function post(p: chrome.runtime.Port, msg: ExtToHost): void {
 async function onMessage(p: chrome.runtime.Port, msg: HostToExt): Promise<void> {
   if (msg.type === "session_open") await openSession(msg.session_id, msg.client_name);
   else if (msg.type === "session_close") await closeSession(msg.session_id);
+  else if (msg.type === "tool_cancel") cancelCall(msg.session_id, msg.id);
   else if (msg.type === "tool_call") {
     const { type: _t, ...call } = msg;
     post(p, { type: "tool_result", ...(await dispatch(call)) });
   }
 }
+
+setPendingSink((m) => { if (port) post(port, m); });
 
 function scheduleReconnect(): void {
   attempts++;

@@ -9,6 +9,7 @@ import { readLines, writeLine } from "./ndjson.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
 
 const MAX_NM_MESSAGE_BYTES = 1_048_576;
+const MAX_EXTEND_MS = 600_000;
 
 type Hello = Extract<ExtToHost, { type: "hello" }>;
 
@@ -120,6 +121,8 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
           return;
         }
         if (!output.destroyed && output.writable) output.write(frame);
+      } else if (m.type === "cancel" && typeof m.id === "string") {
+        sendToExt({ type: "tool_cancel", id: m.id, session_id: sessionId });
       } else {
         log(`dropped unknown client message type ${String(m.type)}`);
       }
@@ -167,6 +170,12 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
       if (!sock) return log(`tool_result for unknown session ${m.session_id}`);
       const { type: _t, session_id: _s, ...rest } = m;
       writeLine(sock, { type: "result", ...rest });
+    } else if (m.type === "tool_pending" && typeof m.session_id === "string" && typeof m.id === "string") {
+      const n = m.extend_ms;
+      if (typeof n !== "number" || !Number.isInteger(n) || n <= 0 || n > MAX_EXTEND_MS) return log(`dropped tool_pending with invalid extend_ms ${String(n)}`);
+      const sock = sessions.get(m.session_id);
+      if (!sock) return log(`tool_pending for unknown session ${m.session_id}`);
+      writeLine(sock, { type: "pending", id: m.id, extend_ms: n } satisfies HostToMcp);
     } else {
       log(`dropped unknown ext message type ${String(m.type)}`);
     }

@@ -7,6 +7,7 @@ import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { checkSite, isSiteAllowed } from "./permissions.ts";
+import { openCallContext, type CallContext } from "./callctx.ts";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -143,8 +144,11 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
 }
 
 /** Nothing state-changing may start once the call's deadline has passed: the caller has already been told it failed. */
-function assertBeforeDeadline(deadline: number): void {
-  if (Date.now() > deadline) {
+function assertBeforeDeadline(ctx: CallContext): void {
+  if (ctx.signal.aborted) {
+    throw new CdpError("timeout", "Not performed: the caller cancelled this call.");
+  }
+  if (Date.now() > ctx.deadline) {
     throw new CdpError("timeout", "Not performed: the tab was busy with an earlier call past this call's deadline.");
   }
 }
@@ -246,15 +250,15 @@ async function settle(tabId: number): Promise<void> {
   }
 }
 
-async function navigate(session_id: string, args: Record<string, unknown>, deadline: number): Promise<Outcome> {
+async function navigate(session_id: string, args: Record<string, unknown>, ctx: CallContext): Promise<Outcome> {
   const tabId = tabIdOf(args);
   const target = urlArg(args);
   await assertOwned(session_id, tabId);
   const history = target === "back" || target === "forward";
   if (!history) await checkSite(target);
-  assertBeforeDeadline(deadline);
+  assertBeforeDeadline(ctx);
   // The wait is capped by the call's deadline so the extension answers before the MCP host gives up.
-  const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+  const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, ctx.deadline - Date.now()));
   try {
     await afterLoad(tabId, async () => {
       if (!history) {
@@ -277,7 +281,7 @@ async function navigate(session_id: string, args: Record<string, unknown>, deadl
 const tabQueues = new Map<number, Promise<void>>();
 
 /** Runs `fn` after every earlier call on the same tab has finished (FIFO), so overlay hiding, captures and input sequences never interleave. */
-async function withTab<T>(tabId: number, deadline: number, fn: () => Promise<T>): Promise<T> {
+async function withTab<T>(tabId: number, ctx: CallContext, fn: () => Promise<T>): Promise<T> {
   const prev = tabQueues.get(tabId) ?? Promise.resolve();
   let release!: () => void;
   const mine = new Promise<void>((resolve) => { release = resolve; });
@@ -285,7 +289,7 @@ async function withTab<T>(tabId: number, deadline: number, fn: () => Promise<T>)
   tabQueues.set(tabId, tail);
   await prev;
   try {
-    assertBeforeDeadline(deadline);
+    assertBeforeDeadline(ctx);
     return await fn();
   } finally {
     release();
@@ -293,7 +297,8 @@ async function withTab<T>(tabId: number, deadline: number, fn: () => Promise<T>)
   }
 }
 
-async function run(call: ToolCall, deadline: number): Promise<Outcome> {
+// `ctx` carries the abort signal and the (resettable) deadline; the permission gate also uses notifyPending.
+async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   await ensureSession(call.session_id);
   if (call.tool === "tabs_list") {
     // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
@@ -304,11 +309,13 @@ async function run(call: ToolCall, deadline: number): Promise<Outcome> {
   if (call.tool === "tabs_create") {
     const url = urlArg(call.args);
     await checkSite(url);
+    assertBeforeDeadline(ctx);
     const tab = await createTab(call.session_id, url);
     const tab_id = tab.id as number;
     await afterLoad(tab_id, async () => {});
     try {
       await checkSite(await currentUrl(tab_id));
+      assertBeforeDeadline(ctx);
     } catch (e) {
       await chrome.tabs.remove(tab_id).catch(() => {});
       throw e;
@@ -319,22 +326,25 @@ async function run(call: ToolCall, deadline: number): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     // Deliberately outside withTab: closing must work while the page is blocked; queued calls then fail on their own (tab gone).
     await assertOwned(call.session_id, tabId);
+    assertBeforeDeadline(ctx);
     await chrome.tabs.remove(tabId);
     return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
   }
   if (call.tool === "navigate") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, deadline, () => navigate(call.session_id, call.args, deadline));
+    return withTab(tabId, ctx, () => navigate(call.session_id, call.args, ctx));
   }
   if (call.tool === "computer") {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, deadline, async () => {
+    return withTab(tabId, ctx, async () => {
       await authorize(call.session_id, tabId);
       const performed = action !== "screenshot";
       if (performed) {
-        assertBeforeDeadline(deadline);
+        assertBeforeDeadline(ctx);
         await assertResponsive(tabId);
+        // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
+        assertBeforeDeadline(ctx);
       }
       const inputsBefore = inputsSentTo(tabId);
       try {
@@ -360,7 +370,7 @@ async function run(call: ToolCall, deadline: number): Promise<Outcome> {
   }
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, deadline, () => readPage(call));
+    return withTab(tabId, ctx, () => readPage(call));
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
@@ -386,11 +396,13 @@ async function readPage(call: ToolCall): Promise<Outcome> {
 
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
-  const deadline = Date.now() + timeouts.callDeadlineMs;
+  const { ctx, close } = openCallContext(call.session_id, call.id);
   try {
-    return { ...base, ...(await run(call, deadline)) };
+    return { ...base, ...(await run(call, ctx)) };
   } catch (e) {
     if (e instanceof CdpError) return { ...base, error: { code: e.code, message: e.message } };
     return { ...base, error: { code: "internal", message: e instanceof Error ? e.message : String(e) } };
+  } finally {
+    close();
   }
 }
