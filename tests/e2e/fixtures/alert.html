@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>count 0</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
+  button { width: 200px; height: 80px; }
+</style>
+</head>
+<body>
+<button id="alert">Alert</button>
+<button id="inc">+1</button>
+<script>
+  let n = 0;
+  document.getElementById("alert").addEventListener("click", () => { alert("hello"); });
+  document.getElementById("inc").addEventListener("click", () => { document.title = "count " + ++n; });
+</script>
+</body>
+</html>

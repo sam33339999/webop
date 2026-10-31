@@ -170,7 +170,8 @@ async function assertResponsive(tabId: number): Promise<void> {
 const NAVIGATE_TIMEOUT_MS = 30000;
 
 /** Resolves once the tab has finished loading what `start` kicked off; rejects with `timeout` after 30 s. */
-async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs = NAVIGATE_TIMEOUT_MS): Promise<void> {
+export async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs = NAVIGATE_TIMEOUT_MS): Promise<void> {
+  if (limitMs <= 0) throw new CdpError("timeout", "Not performed: the call's time budget was already spent before the navigation could start.");
   let sawLoading = false;
   let finish!: () => void;
   const done = new Promise<void>((resolve) => { finish = resolve; });
@@ -190,6 +191,8 @@ async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs =
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new CdpError("timeout", `Page did not finish loading within ${Math.max(0, Math.round(limitMs / 100) / 10)}s.`)), limitMs);
   });
+  // If start() throws, `timeout` is never awaited; keep its later rejection from becoming unhandled.
+  timeout.catch(() => {});
   try {
     await start();
     await Promise.race([done, timeout]);
@@ -278,6 +281,11 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
+/** Errors that mean more than "the capture failed": they must never be reported as a successful action. */
+const NOT_A_CAPTURE_FAILURE: ReadonlySet<string> = new Set([
+  "detached_by_user", "stopped_by_user", "tab_not_in_session", "permission_denied", "permission_required", "security_check_failed",
+]);
+
 const tabQueues = new Map<number, Promise<void>>();
 
 /** Runs `fn` after every earlier call on the same tab has finished (FIFO), so overlay hiding, captures and input sequences never interleave. */
@@ -354,9 +362,20 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         }
         await assertLive(call.session_id);
         await recheck(tabId, performed);
-        const { block } = await screenshot(tabId);
+        let shot: Awaited<ReturnType<typeof screenshot>>;
+        try {
+          shot = await screenshot(tabId);
+        } catch (e) {
+          // The action already went out in full; a failed capture must not read as a failed action.
+          if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
+          await assertLive(call.session_id);
+          await recheck(tabId, performed);
+          const why = e instanceof Error ? e.message : String(e);
+          return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
+        }
         await recheck(tabId, performed);
-        return { content: [block] };
+        const { block, ctx } = shot;
+        return { content: [{ type: "text", text: `Screenshot ${ctx.screenshotWidth}x${ctx.screenshotHeight} px; use this frame for coordinates.` }, block] };
       } catch (e) {
         // Once input has gone out, a failure no longer means "nothing happened".
         if (inputsSentTo(tabId) === inputsBefore) throw e;

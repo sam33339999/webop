@@ -35,6 +35,20 @@ test("screenshot returns jpeg within budget and stores context", async () => {
   assert.ok(Math.max(width, height) <= 1568);
 });
 
+test("screenshot is preceded by a frame-size hint matching the image", async () => {
+  const { sw, baseUrl } = await open();
+  const tab_id = await openTab(sw, `${baseUrl}/button.html`);
+  const r = await call(sw, "computer", { action: "screenshot", tab_id });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  const [hint, image] = r.content;
+  assert.ok(hint.type === "text");
+  assert.match(hint.text, /^Screenshot \d+x\d+ px/);
+  assert.equal(image.type, "image");
+  assert.ok(image.type === "image");
+  const { width, height } = jpegSize(Buffer.from(image.data, "base64"));
+  assert.equal(hint.text, `Screenshot ${width}x${height} px; use this frame for coordinates.`);
+});
+
 for (const dpr of [1, 2]) {
   test(`image size equals stored context at dpr ${dpr}`, async () => {
     const { sw, baseUrl, context } = await open({ deviceScaleFactor: dpr });

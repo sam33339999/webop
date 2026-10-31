@@ -124,3 +124,39 @@ test("t_cancelled_tabs_create_creates_no_tab", async () => {
   assert.equal(errOf(r as R).code, "timeout");
   assert.equal(await h.sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length)), before);
 });
+
+test("t_real_alert: a real alert() blocks the page; the next action is refused and nothing lands after dismissal", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/alert.html`);
+  const page = h.context.pages().find((p) => p.url().includes("/alert.html")) as Page;
+  assert.ok(page);
+  // A registered listener that never accepts/dismisses stops Playwright from auto-closing the dialog.
+  const dialogs: Array<{ dismiss(): Promise<void> }> = [];
+  page.on("dialog", (d) => { dialogs.push(d); });
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const ctx = await h.sw.evaluate((id) => (globalThis as any).__webop.getContext(id), tab_id);
+  const centerOf = async (selector: string): Promise<[number, number]> => {
+    const r = await page.evaluate((sel) => {
+      const b = document.querySelector(sel)!.getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    }, selector);
+    return [(r.x * ctx.screenshotWidth) / ctx.viewportWidth, (r.y * ctx.screenshotHeight) / ctx.viewportHeight];
+  };
+  const alertAt = await centerOf("#alert");
+  const incAt = await centerOf("#inc");
+  await h.sw.evaluate((t) => (globalThis as any).__webop.setTimeouts(t), { cdpSendMs: 1000, callDeadlineMs: 50_000, probeMs: 500 });
+
+  assert.equal(errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: alertAt })).code, "timeout");
+  assert.equal(dialogs.length, 1, "the alert dialog is really open");
+  const second = errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: incAt }));
+  assert.equal(second.code, "timeout");
+  assert.match(second.message, /^Not performed/);
+  assert.equal(dialogs.length, 1, "no second dialog appeared");
+
+  await dialogs[0].dismiss();
+  // Poll: a late-landing click would show up as "count 1" shortly after the page unblocks.
+  for (let i = 0; i < 20; i++) {
+    assert.equal(await page.evaluate(() => document.title), "count 0", "the refused click never landed");
+    await sleep(50);
+  }
+});
