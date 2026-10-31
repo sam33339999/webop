@@ -20,10 +20,16 @@ const detachWaiters = new Map<number, Set<() => void>>();
 const CANCEL_GRACE_MS = 100;
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
-export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000 };
+export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
+const inputCounts = new Map<number, number>();
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
 let mayControl: (tabId: number) => boolean = () => true;
+
+/** How many `Input.*` commands have been sent to the tab; lets callers tell whether an action began reaching the page. */
+export function inputsSentTo(tabId: number): number {
+  return inputCounts.get(tabId) ?? 0;
+}
 
 /** Registers the check that stops a closed session's in-flight work from re-attaching to its former tabs. */
 export function setTabGuard(fn: (tabId: number) => boolean): void {
@@ -31,7 +37,7 @@ export function setTabGuard(fn: (tabId: number) => boolean): void {
 }
 
 function sessionClosed(): CdpError {
-  return new CdpError("tab_not_in_session", "Session closed; this tab is no longer controlled by the session.");
+  return new CdpError("tab_not_in_session", "This tab is no longer controlled by the session (the session ended or the tab was closed).");
 }
 
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
@@ -133,6 +139,7 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
   let abort!: (e: CdpError) => void;
   const aborted = new Promise<never>((_, reject) => { abort = reject; });
   set.add(abort);
+  if (method.startsWith("Input.")) inputCounts.set(tabId, inputsSentTo(tabId) + 1);
   const startedAt = Date.now();
   const canceledSince = () => {
     const d = lastDetach.get(tabId);
@@ -147,6 +154,9 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted, timedOut]);
   } catch (e) {
     if (e instanceof CdpError) throw e;
+    if (!(await chrome.tabs.get(tabId).then(() => true, () => false))) {
+      throw new CdpError("tab_not_in_session", `Tab ${tabId} was closed.`);
+    }
     if (!mayControl(tabId)) throw sessionClosed();
     // Chrome may reject the in-flight command before onDetach(canceled_by_user) fires, so give the event a moment.
     if (!canceledSince()) await waitForDetach(tabId, CANCEL_GRACE_MS);

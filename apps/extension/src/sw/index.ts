@@ -35,9 +35,10 @@ if (__DEV__) {
     handleDetach(tabId, reason);
   };
   /** Test-only: shortens the CDP send timeout and the per-call deadline. */
-  const setTimeouts = (t: { cdpSendMs?: number; callDeadlineMs?: number }): void => {
+  const setTimeouts = (t: { cdpSendMs?: number; callDeadlineMs?: number; probeMs?: number }): void => {
     if (t.cdpSendMs !== undefined) timeouts.cdpSendMs = t.cdpSendMs;
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
+    if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
   (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
 }

@@ -1,5 +1,5 @@
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, send, timeouts } from "./cdp.ts";
+import { CdpError, inputsSentTo, send, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -52,6 +52,7 @@ async function askContent<T>(tabId: number, msg: object): Promise<T> {
   try {
     return await Promise.race([chrome.tabs.sendMessage(tabId, msg, { frameId: 0 }) as Promise<T>, timeout]);
   } catch (e) {
+    if (!(await chrome.tabs.get(tabId).then(() => true, () => false))) throw new CdpError("tab_not_in_session", `Tab ${tabId} was closed.`);
     const why = e instanceof Error ? e.message : String(e);
     throw new CdpError("internal", `Page content script not reachable (${why}). The page may be protected or still loading; reload the tab and retry.`);
   } finally {
@@ -146,10 +147,24 @@ function assertBeforeDeadline(deadline: number): void {
   }
 }
 
+/** A blocked page (dialog, long script) must fail fast with "Not performed" instead of queueing input that lands later. */
+async function assertResponsive(tabId: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const dead = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("probe timeout")), timeouts.probeMs); });
+  try {
+    await Promise.race([send(tabId, "Runtime.evaluate", { expression: "1", returnByValue: true }), dead]);
+  } catch (e) {
+    if (e instanceof CdpError && e.code !== "timeout") throw e;
+    throw new CdpError("timeout", "Not performed: the page is not responding (a JavaScript dialog or long-running script may be blocking it).");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const NAVIGATE_TIMEOUT_MS = 30000;
 
 /** Resolves once the tab has finished loading what `start` kicked off; rejects with `timeout` after 30 s. */
-async function afterLoad(tabId: number, start: () => Promise<unknown>): Promise<void> {
+async function afterLoad(tabId: number, start: () => Promise<unknown>, limitMs = NAVIGATE_TIMEOUT_MS): Promise<void> {
   let sawLoading = false;
   let finish!: () => void;
   const done = new Promise<void>((resolve) => { finish = resolve; });
@@ -167,7 +182,7 @@ async function afterLoad(tabId: number, start: () => Promise<unknown>): Promise<
   }, 100);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CdpError("timeout", `Page did not finish loading within ${NAVIGATE_TIMEOUT_MS / 1000}s.`)), NAVIGATE_TIMEOUT_MS);
+    timer = setTimeout(() => reject(new CdpError("timeout", `Page did not finish loading within ${Math.max(0, Math.round(limitMs / 100) / 10)}s.`)), limitMs);
   });
   try {
     await start();
@@ -236,13 +251,22 @@ async function navigate(session_id: string, args: Record<string, unknown>, deadl
   const history = target === "back" || target === "forward";
   if (!history) await checkSite(target);
   assertBeforeDeadline(deadline);
-  await afterLoad(tabId, async () => {
-    if (!history) {
-      await chrome.tabs.update(tabId, { url: target });
-    } else {
-      await goHistory(tabId, target);
+  // The wait is capped by the call's deadline so the extension answers before the MCP host gives up.
+  const limit = Math.min(NAVIGATE_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+  try {
+    await afterLoad(tabId, async () => {
+      if (!history) {
+        await chrome.tabs.update(tabId, { url: target });
+      } else {
+        await goHistory(tabId, target);
+      }
+    }, limit);
+  } catch (e) {
+    if (e instanceof CdpError && e.code === "timeout" && e.message.startsWith("Page did not finish")) {
+      throw new CdpError("timeout", `The navigation was started and may still complete. ${e.message}`);
     }
-  });
+    throw e;
+  }
   const final = await currentUrl(tabId);
   await checkSite(final);
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
@@ -308,14 +332,28 @@ async function run(call: ToolCall, deadline: number): Promise<Outcome> {
       const performed = action !== "screenshot";
       if (performed) {
         assertBeforeDeadline(deadline);
-        await perform(action, tabId, call.args);
-        await settle(tabId);
+        await assertResponsive(tabId);
       }
-      await assertLive(call.session_id);
-      await recheck(tabId, performed);
-      const { block } = await screenshot(tabId);
-      await recheck(tabId, performed);
-      return { content: [block] };
+      const inputsBefore = inputsSentTo(tabId);
+      try {
+        if (performed) {
+          await perform(action, tabId, call.args);
+          await settle(tabId);
+        }
+        await assertLive(call.session_id);
+        await recheck(tabId, performed);
+        const { block } = await screenshot(tabId);
+        await recheck(tabId, performed);
+        return { content: [block] };
+      } catch (e) {
+        // Once input has gone out, a failure no longer means "nothing happened".
+        if (inputsSentTo(tabId) === inputsBefore) throw e;
+        const prefix = "The action may have been partially or fully performed: ";
+        const code = e instanceof CdpError ? e.code : "internal";
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.includes("WAS performed")) throw e;
+        throw new CdpError(code, prefix + message);
+      }
     });
   }
   if (call.tool === "read_page") {

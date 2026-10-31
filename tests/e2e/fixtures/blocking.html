@@ -1,6 +1,6 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>blocking</title>
+<head><meta charset="utf-8"><title>count:0</title>
 <style>
   html, body { margin: 0; height: 100%; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
@@ -10,9 +10,12 @@
 </head>
 <body>
 <button id="btn">Block</button>
-<input id="field" autofocus>
+<button id="inc">Count</button>
+<input id="field">
 <script>
   // Blocks the main thread synchronously (a busy loop, not alert(): Playwright auto-dismisses dialogs on tracked pages).
+  let n = 0;
+  document.getElementById("inc").addEventListener("click", () => { document.title = "count:" + ++n; });
   document.getElementById("btn").addEventListener("click", () => {
     const ms = Number(new URLSearchParams(location.search).get("ms") ?? 6000);
     const t = Date.now();
