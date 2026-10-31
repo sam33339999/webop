@@ -22,7 +22,7 @@ interface Store { created: number; sessions: Record<string, SessionState>; close
 const MAX_CLOSED = 500;
 
 /** Dev-only seams for e2e tests (see the `__webop` hook); never set in a production build. */
-export const sessionDevHooks: { beforeCreate?: () => Promise<void> } = {};
+export const sessionDevHooks: { beforeCreate?: () => Promise<void>; beforeOwnCheck?: () => Promise<void>; beforeClientName?: () => Promise<void> } = {};
 
 let store: Store | undefined;
 let loading: Promise<Store> | undefined;
@@ -192,7 +192,12 @@ export async function showGlow(session_id: string, tabId: number, isStale: () =>
   lit.set(tabId, session_id);
   const color = await locked((s) => GLOW_COLORS[s.sessions[session_id]?.color ?? "blue"]);
   // Re-checked at delivery (also after an inject retry): a stop in between has already switched the overlay off.
-  const stillWanted = async (id: number): Promise<boolean> => !isStale() && lit.get(id) === session_id && (await isOwned(id));
+  // The ownership lookup is the last await: staleness is judged synchronously after it, right before the message goes out.
+  const stillWanted = async (id: number): Promise<boolean> => {
+    if (__DEV__) await sessionDevHooks.beforeOwnCheck?.();
+    const owns = await locked((s) => s.sessions[session_id]?.tabIds.includes(id) ?? false);
+    return owns && !isStale() && lit.get(id) === session_id;
+  };
   if (!(await stillWanted(tabId))) return;
   await sendWithInject(tabId, { type: "webop:glow", on: true, color }, stillWanted).catch(() => {});
 }
@@ -311,6 +316,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 
 /** Name the client gave when it opened the session (what the permission prompt shows); the id itself for implicit sessions. */
-export function clientNameOf(session_id: string): Promise<string> {
+export async function clientNameOf(session_id: string): Promise<string> {
+  if (__DEV__) await sessionDevHooks.beforeClientName?.();
   return locked((s) => s.sessions[session_id]?.client_name ?? session_id);
 }

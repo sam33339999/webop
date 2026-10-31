@@ -24,6 +24,19 @@ export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<
   hideOverlay = fn;
 }
 
+/**
+ * Runs `fn` with the overlay (and so the stop button) hidden: the agent's own input must never land on the button.
+ * Restored afterwards even when `fn` fails.
+ */
+export async function withOverlayHidden<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
+  await hideOverlay(tabId, true);
+  try {
+    return await fn();
+  } finally {
+    await hideOverlay(tabId, false);
+  }
+}
+
 export function getContext(tabId: number): ScreenshotContext | undefined {
   return contexts.get(tabId);
 }

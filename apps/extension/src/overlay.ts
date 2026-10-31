@@ -17,6 +17,7 @@ type OverlayMessage =
 const host = document.createElement("div");
 // Every inline declaration is `!important`, so ordinary page CSS (even `html > div { display: none !important }`) cannot
 // hide, move or cover the host, and the stop button inside it sits at the top of the z-order (2147483647).
+// Page script in the main world can still remove() the host or rewrite its inline style through the DOM.
 // Not covered: elements in the top layer (<dialog>.showModal(), popovers, fullscreen) and a capture-phase
 // stopPropagation() on window can still keep the in-page button from being seen or clicked. The debugger-bar cancel
 // and the toolbar icon are the stops the page cannot interfere with.

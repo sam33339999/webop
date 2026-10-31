@@ -252,3 +252,56 @@ test("t_badge_count: the action badge shows how many host sessions are open", as
   await hook(h, "closeSession", "b");
   assert.equal(await badge(), "");
 });
+
+test("t_agent_click_under_stop_button: the agent's own click at the stop button's position hits the page, not the stop button", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/corner.html`);
+  const page = pageOf(h, "/corner.html");
+  const shot = await call(h.sw, "computer", { action: "screenshot", tab_id });
+  assert.ok("content" in shot, "error" in shot ? shot.error.message : "");
+  const state = () => h.sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
+  await waitFor(async () => (await state()).stopDisplay === "block", "stop button shown");
+  const ctx = await hook<any>(h, "getContext", tab_id);
+  const [cx, cy] = await stopPoint(page);
+  const coordinate = [(cx * ctx.screenshotWidth) / ctx.viewportWidth, (cy * ctx.screenshotHeight) / ctx.viewportHeight];
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  assert.equal(await page.evaluate(() => document.title), "corner:1", "the page button received the click");
+  assert.equal(await hook<number>(h, "stopEpoch", "test"), 0, "the session was not stopped");
+  await waitFor(async () => { const s = await state(); return s.stopDisplay === "block" && s.hidden === false; }, "stop button visible again");
+});
+
+test("t_late_glow_after_stop: a glow-on still waiting for its ownership check does not re-show after a stop", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const state = () => h.sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
+  await h.sw.evaluate(() => {
+    const w = globalThis as any;
+    w.__webop.sessionDevHooks.beforeOwnCheck = () => new Promise<void>((r) => { w.__ownRelease = r; w.__webop.sessionDevHooks.beforeOwnCheck = undefined; });
+  });
+  const reading = call(h.sw, "read_page", { tab_id });
+  await waitFor(() => h.sw.evaluate(() => typeof (globalThis as any).__ownRelease === "function"), "glow waiting on the ownership check");
+  await hook(h, "stopSession", "test");
+  await h.sw.evaluate(() => (globalThis as any).__ownRelease());
+  await reading.catch(() => {});
+  await sleep(600);
+  const s = await state();
+  assert.equal(s.glowOpacity, "0");
+  assert.equal(s.stopDisplay, "none");
+});
+
+test("t_no_ask_after_stop: a call stopped while resolving the client name starts no permission prompt", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.altUrl}/button.html`);
+  await h.sw.evaluate(() => {
+    const w = globalThis as any;
+    w.__webop.sessionDevHooks.beforeClientName = () => new Promise<void>((r) => { w.__nameRelease = r; w.__webop.sessionDevHooks.beforeClientName = undefined; });
+  });
+  const reading = call(h.sw, "read_page", { tab_id });
+  await waitFor(() => h.sw.evaluate(() => typeof (globalThis as any).__nameRelease === "function"), "call waiting on the client name");
+  await hook(h, "stopSession", "test");
+  await h.sw.evaluate(() => (globalThis as any).__nameRelease());
+  assert.equal(errOf(await reading).code, "stopped_by_user");
+  await sleep(800);
+  assert.equal(h.context.pages().filter((p) => p.url().includes("prompt.html")).length, 0, "no prompt window");
+});

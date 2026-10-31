@@ -2,7 +2,7 @@ import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, dropDetachNoticeSince, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
-import { getContext, screenshot } from "./capture.ts";
+import { getContext, screenshot, withOverlayHidden } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
@@ -322,8 +322,9 @@ async function recheck(session_id: string, tabId: number, performed: boolean, ct
   if (state === "deny") {
     throw new CdpError("permission_denied", `${lead} tab is now on a site that is not allowed (${site}); no content is returned.`);
   }
+  const client_name = await clientNameOf(session_id);
   if (ctx.stopped()) throw stoppedError();
-  askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
+  askInBackground({ session_id, client_name, url, level: "read", tabId });
   throw new CdpError("permission_required", `${lead} tab is now on ${site}, which needs the user's approval; no content is returned. A prompt was shown to the user; after they allow it, retry (e.g. read_page).`);
 }
 
@@ -347,8 +348,9 @@ async function requireReadable(session_id: string, tabId: number, ctx: CallConte
   if (state === "deny") throw deniedError(url);
   if (state === "ask") {
     const site = siteOf(url);
+    const client_name = await clientNameOf(session_id);
     if (ctx.stopped()) throw stoppedError();
-    askInBackground({ session_id, client_name: await clientNameOf(session_id), url, level: "read", tabId });
+    askInBackground({ session_id, client_name, url, level: "read", tabId });
     throw new CdpError("permission_required", `The tab is on ${site}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
   }
   assertBeforeDeadline(ctx);
@@ -442,8 +444,9 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       const state = await accessState(call.session_id, landed, "read");
       if (state === "deny") throw deniedError(landed, "The tab was closed");
       if (state === "ask") {
+        const client_name = await clientNameOf(call.session_id);
         if (ctx.stopped()) throw stoppedError();
-        askInBackground({ session_id: call.session_id, client_name: await clientNameOf(call.session_id), url: landed, level: "read" });
+        askInBackground({ session_id: call.session_id, client_name, url: landed, level: "read" });
         throw new CdpError("permission_required", `The tab was closed because it ended up on ${siteOf(landed)}, which needs the user's approval. A prompt was shown to the user; after they allow it, retry tabs_create.`);
       }
       assertBeforeDeadline(ctx);
@@ -509,7 +512,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
-          await perform(action, tabId, call.args, guard);
+          await withOverlayHidden(tabId, () => perform(action, tabId, call.args, guard));
           await settle(tabId);
         }
         await assertLive(call.session_id);
