@@ -163,7 +163,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 | 5 | 把某網站加入拒絕清單後操作它 | 直接回傳 `permission_denied`，完全不跳詢問 | |
 | 6 | 點擊途中把分頁導向另一個網站 | 回傳 `security_check_failed`（或讀取類回傳 `permission_required`），未在新網站送出輸入 | |
 | 7 | agent 執行長動作時按頁內「停止」按鈕 | 動作中斷，回傳 `stopped_by_user`；下一個操作重新詢問「本次允許」的網站 | |
-| 8 | 按工具列圖示 | 所有 session 都被停止，徽章數字歸零或更新 | |
+| 8 | 按工具列圖示 | 所有 session 進行中的呼叫都被停止（回 `stopped_by_user`）；session 仍保持連線，徽章數字不變 | |
 | 9 | 按 debugger 資訊列的「取消」 | 該分頁下一個呼叫回傳一次 `detached_by_user`，再下一個呼叫自動重新連上 | |
 | 10 | 在頁面觸發真正的 `alert()`，再讓 agent 點擊 | 點擊在約 20 秒內回傳 `timeout`；之後再點一次會回「Not performed」，關閉 alert 後也不會補上那次點擊 | |
 
