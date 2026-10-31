@@ -241,3 +241,38 @@ test("t_output_epipe_logged: output error is logged, host does not crash", async
   await until(() => fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").includes("EPIPE"));
   input.end(); await done;
 });
+
+test("t_pending_relayed: tool_pending reaches only the owning mcp socket; invalid extend_ms dropped", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  const b = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "A" });
+  writeLine(b.c, { type: "open", client_name: "B" });
+  await until(() => a.msgs.length === 1 && b.msgs.length === 1);
+  const sid = a.msgs[0].session_id;
+  for (const bad of [0, -5, 1.5, 600_001, "100", null]) {
+    t.input.write(encodeFrame({ type: "tool_pending", id: "1", session_id: sid, extend_ms: bad }));
+  }
+  t.input.write(encodeFrame({ type: "tool_pending", id: "1", session_id: sid, extend_ms: 600_000 }));
+  await until(() => a.msgs.length === 2);
+  assert.deepEqual(a.msgs[1], { type: "pending", id: "1", extend_ms: 600_000 });
+  await sleep(50);
+  assert.equal(a.msgs.length, 2);
+  assert.equal(b.msgs.length, 1);
+  a.c.destroy(); b.c.destroy(); t.input.end(); await t.done;
+});
+
+test("cancel from mcp is relayed to the extension as tool_cancel with its session_id", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "A" });
+  await until(() => a.msgs.length === 1);
+  writeLine(a.c, { type: "cancel", id: "7" });
+  await until(() => t.fromHost.some((m) => m.type === "tool_cancel"));
+  assert.deepEqual(t.fromHost.find((m) => m.type === "tool_cancel"), { type: "tool_cancel", id: "7", session_id: a.msgs[0].session_id });
+  a.c.destroy(); t.input.end(); await t.done;
+});

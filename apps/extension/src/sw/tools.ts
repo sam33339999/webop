@@ -7,6 +7,7 @@ import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { checkSite, isSiteAllowed } from "./permissions.ts";
+import { openCallContext, type CallContext } from "./callctx.ts";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -293,7 +294,8 @@ async function withTab<T>(tabId: number, deadline: number, fn: () => Promise<T>)
   }
 }
 
-async function run(call: ToolCall, deadline: number): Promise<Outcome> {
+// `_ctx` is the per-call context (abort signal, notifyPending, resetDeadline) that the permission gate will use.
+async function run(call: ToolCall, deadline: number, _ctx: CallContext): Promise<Outcome> {
   await ensureSession(call.session_id);
   if (call.tool === "tabs_list") {
     // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
@@ -386,11 +388,13 @@ async function readPage(call: ToolCall): Promise<Outcome> {
 
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
-  const deadline = Date.now() + timeouts.callDeadlineMs;
+  const { ctx, close } = openCallContext(call.session_id, call.id);
   try {
-    return { ...base, ...(await run(call, deadline)) };
+    return { ...base, ...(await run(call, ctx.deadline, ctx)) };
   } catch (e) {
     if (e instanceof CdpError) return { ...base, error: { code: e.code, message: e.message } };
     return { ...base, error: { code: "internal", message: e instanceof Error ? e.message : String(e) } };
+  } finally {
+    close();
   }
 }

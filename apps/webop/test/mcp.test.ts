@@ -11,6 +11,10 @@ import { readLines, writeLine } from "../src/ndjson.ts";
 import { descriptorPath, runDir, socketPath } from "../src/paths.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const until = async (f: () => boolean, ms = 3000) => {
+  const end = Date.now() + ms;
+  while (!f()) { if (Date.now() > end) throw new Error("timeout"); await sleep(10); }
+};
 
 function tmpRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "wm-"));
@@ -194,5 +198,57 @@ test("late result after timeout is ignored", async () => {
   const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
   assert.match(text(r), /^timeout:/);
   await sleep(400);
+  host.close();
+});
+
+test("t_pending_extends_timeout: pending pushes the deadline out so a late result still lands", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => {
+    setTimeout(() => writeLine(s, { type: "pending", id: m.id, extend_ms: 500 }), 100);
+    setTimeout(() => writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "granted" }] }), 600);
+  });
+  const client = await connectClient({ root, callTimeoutMs: 200 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(r.isError, undefined);
+  assert.equal(text(r), "granted");
+  assert.equal(host.seen.filter((m) => m.type === "cancel").length, 0);
+  host.close();
+});
+
+test("t_cancel_on_timeout: giving up sends cancel for the same id", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", () => {});
+  const client = await connectClient({ root, callTimeoutMs: 100 });
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^timeout:/);
+  const call = host.seen.find((m) => m.type === "call");
+  await until(() => host.seen.some((m) => m.type === "cancel"));
+  assert.deepEqual(host.seen.find((m) => m.type === "cancel"), { type: "cancel", id: call.id });
+  host.close();
+});
+
+test("MCP client cancellation sends cancel to the host", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", () => {});
+  const client = await connectClient({ root, callTimeoutMs: 5000 });
+  const ac = new AbortController();
+  const p = client.callTool({ name: "browser_tabs_list", arguments: {} }, undefined, { signal: ac.signal }).catch((e) => e);
+  await until(() => host.seen.some((m) => m.type === "call"));
+  ac.abort();
+  await p;
+  await until(() => host.seen.some((m) => m.type === "cancel"));
+  assert.equal(host.seen.find((m) => m.type === "cancel").id, host.seen.find((m) => m.type === "call").id);
+  host.close();
+});
+
+test("malformed pending is ignored", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) => {
+    writeLine(s, { type: "pending", id: m.id, extend_ms: "x" });
+    writeLine(s, { type: "pending", id: m.id, extend_ms: -1 });
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] });
+  });
+  const client = await connectClient({ root });
+  assert.equal(text((await client.callTool({ name: "browser_tabs_list", arguments: {} })) as any), "ok");
   host.close();
 });

@@ -15,15 +15,19 @@ export type ToolResult = { id: string; session_id: string; content: ContentBlock
 // host → extension
 export type HostToExt = ({ type: "tool_call" } & ToolCall)
   | { type: "session_open"; session_id: string; client_name: string }
-  | { type: "session_close"; session_id: string };
+  | { type: "session_close"; session_id: string }
+  | { type: "tool_cancel"; id: string; session_id: string };
 
 // extension → host
 export type ExtToHost = { type: "hello"; profile_id: string; profile_label: string; extension_version: string }
-  | ({ type: "tool_result" } & ToolResult);
+  | ({ type: "tool_result" } & ToolResult)
+  | { type: "tool_pending"; id: string; session_id: string; extend_ms: number };
 
 // mcp ⇄ host（socket）
 export type McpToHost = { type: "open"; client_name: string }
-  | { type: "call"; id: string; tool: ToolName; args: Record<string, unknown> };
+  | { type: "call"; id: string; tool: ToolName; args: Record<string, unknown> }
+  | { type: "cancel"; id: string };
 
 export type HostToMcp = { type: "opened"; session_id: string; profile_id: string; profile_label: string }
-  | ({ type: "result" } & Omit<ToolResult, "session_id">);
+  | ({ type: "result" } & Omit<ToolResult, "session_id">)
+  | { type: "pending"; id: string; extend_ms: number };

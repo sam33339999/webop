@@ -5,6 +5,7 @@ import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession, isOwned } from "./sessions.ts";
 import { ask, promptTimeouts } from "./prompt.ts";
 import { checkSite, grant, migrateAllowList, rearmReady, revokeSite } from "./permissions.ts";
+import { cancelCall, openCallContext, PENDING_MARGIN_MS, setPendingSink } from "./callctx.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
@@ -48,5 +49,19 @@ if (__DEV__) {
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
-  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, checkSite, grant };
+  /** Test-only: runs ask() the way a gated tool will (pending notice, abortable by tool_cancel, deadline reset after the answer). */
+  const askInCall = async (session_id: string, id: string, req: Parameters<typeof ask>[0]): Promise<{ answer: string; deadlineResetAfter: boolean }> => {
+    const { ctx, close } = openCallContext(session_id, id);
+    try {
+      ctx.notifyPending(promptTimeouts.askMs + PENDING_MARGIN_MS);
+      const before = ctx.deadline;
+      const answer = await ask(req, ctx.signal);
+      await new Promise((r) => setTimeout(r, 5));
+      ctx.resetDeadline();
+      return { answer, deadlineResetAfter: ctx.deadline > before };
+    } finally {
+      close();
+    }
+  };
+  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, checkSite, grant };
 }

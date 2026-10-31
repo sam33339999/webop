@@ -104,3 +104,48 @@ test("t_once_revoked_on_close: a once grant disappears when its session closes",
   await sw(h, "closeSession", "s1");
   assert.equal((await once() as any)?.s1, undefined);
 });
+
+const promptPages = (h: Launched) => h.context.pages().filter((p) => p.url().includes("prompt.html"));
+async function waitFor<T>(fn: () => T | undefined | false, what: string, ms = 10_000): Promise<T> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const v = fn();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+const askReq = { session_id: "s1", client_name: "claude-test", site: "localhost", level: "act" };
+
+test("t_pending_notice: a gated call posts tool_pending with askMs + 10 s, then resets its deadline after the answer", async () => {
+  const h = await open();
+  await h.sw.evaluate(() => {
+    const w = globalThis as any;
+    w.__sent = [];
+    w.__webop.setPendingSink((m: unknown) => w.__sent.push(m));
+  });
+  const done = h.sw.evaluate((r) => (globalThis as any).__webop.askInCall("s1", "c1", r), askReq);
+  const popup = await waitFor(() => promptPages(h)[0], "prompt window");
+  await popup.getByRole("button", { name: "本次允許" }).click();
+  const r = await done as { answer: string; deadlineResetAfter: boolean };
+  assert.equal(r.answer, "once");
+  assert.equal(r.deadlineResetAfter, true);
+  const sent = await h.sw.evaluate(() => (globalThis as any).__sent);
+  assert.deepEqual(sent, [{ type: "tool_pending", id: "c1", session_id: "s1", extend_ms: 70_000 }]);
+});
+
+test("t_answer_after_cancel_noop: tool_cancel during the prompt closes the popup, denies, and nothing happens on the page", async () => {
+  const h = await open();
+  const tabId = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const done = h.sw.evaluate((r) => (globalThis as any).__webop.askInCall("s1", "c2", r), askReq);
+  await waitFor(() => promptPages(h)[0], "prompt window");
+  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
+  const r = await done as { answer: string };
+  assert.equal(r.answer, "deny");
+  await waitFor(() => promptPages(h).length === 0, "popup closed after tool_cancel");
+  // A late cancel for a finished call is a no-op.
+  await h.sw.evaluate(() => (globalThis as any).__webop.cancelCall("s1", "c2"));
+  const page = h.context.pages().find((p) => p.url().includes("button.html"))!;
+  assert.equal(await page.title(), "button");
+  assert.ok(tabId > 0);
+});
