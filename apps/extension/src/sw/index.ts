@@ -1,4 +1,4 @@
-import { handleDetach, send } from "./cdp.ts";
+import { handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { dispatch } from "./tools.ts";
 import { adoptTab, closeSession } from "./sessions.ts";
@@ -34,5 +34,10 @@ if (__DEV__) {
     await new Promise((resolve) => setTimeout(resolve, 10));
     handleDetach(tabId, reason);
   };
-  (globalThis as Record<string, unknown>).__webop = { dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
+  /** Test-only: shortens the CDP send timeout and the per-call deadline. */
+  const setTimeouts = (t: { cdpSendMs?: number; callDeadlineMs?: number }): void => {
+    if (t.cdpSendMs !== undefined) timeouts.cdpSendMs = t.cdpSendMs;
+    if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
+  };
+  (globalThis as Record<string, unknown>).__webop = { setTimeouts, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, closeSession };
 }

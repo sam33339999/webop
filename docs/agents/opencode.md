@@ -71,7 +71,7 @@ pnpm -r build
 | `permission_denied` | 網站不在白名單內，需由使用者在 options 頁加入 |
 | `stale_ref` | ref 已失效（頁面重新載入或 DOM 改變），請重新 `browser_read_page` |
 | `oob` | 座標超出截圖範圍 |
-| `timeout` | 操作逾時 |
+| `timeout` | 操作逾時。只有訊息含「Not performed」時才保證動作沒有執行；CDP 送出逾時（頁面被對話框或長時間腳本卡住）表示指令可能已、也可能未送達頁面 |
 | `detached_by_user` | 使用者手動中止了 debugger 連線（關掉資訊列），該分頁不再受控 |
 
 ## 已知限制

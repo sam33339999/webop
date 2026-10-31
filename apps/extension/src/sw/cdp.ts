@@ -18,6 +18,9 @@ const pending = new Map<number, Set<(e: CdpError) => void>>();
 const lastDetach = new Map<number, { reason: string; at: number }>();
 const detachWaiters = new Map<number, Set<() => void>>();
 const CANCEL_GRACE_MS = 100;
+
+/** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
+export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000 };
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
 let mayControl: (tabId: number) => boolean = () => true;
@@ -135,8 +138,13 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     const d = lastDetach.get(tabId);
     return d !== undefined && d.reason === "canceled_by_user" && d.at >= startedAt;
   };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    const ms = timeouts.cdpSendMs;
+    timer = setTimeout(() => reject(new CdpError("timeout", `${method} did not complete within ${ms / 1000}s; the page may be blocked by a JavaScript dialog or a long-running script.`)), ms);
+  });
   try {
-    return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted]);
+    return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted, timedOut]);
   } catch (e) {
     if (e instanceof CdpError) throw e;
     if (!mayControl(tabId)) throw sessionClosed();
@@ -147,6 +155,7 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     }
     throw new CdpError("internal", `${method} failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
+    clearTimeout(timer);
     set.delete(abort);
   }
 }

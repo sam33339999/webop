@@ -1,5 +1,5 @@
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, send } from "./cdp.ts";
+import { CdpError, send, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -139,6 +139,13 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
   }
 }
 
+/** Nothing state-changing may start once the call's deadline has passed: the caller has already been told it failed. */
+function assertBeforeDeadline(deadline: number): void {
+  if (Date.now() > deadline) {
+    throw new CdpError("timeout", "Not performed: the tab was busy with an earlier call past this call's deadline.");
+  }
+}
+
 const NAVIGATE_TIMEOUT_MS = 30000;
 
 /** Resolves once the tab has finished loading what `start` kicked off; rejects with `timeout` after 30 s. */
@@ -222,12 +229,13 @@ async function settle(tabId: number): Promise<void> {
   }
 }
 
-async function navigate(session_id: string, args: Record<string, unknown>): Promise<Outcome> {
+async function navigate(session_id: string, args: Record<string, unknown>, deadline: number): Promise<Outcome> {
   const tabId = tabIdOf(args);
   const target = urlArg(args);
   await assertOwned(session_id, tabId);
   const history = target === "back" || target === "forward";
   if (!history) await checkSite(target);
+  assertBeforeDeadline(deadline);
   await afterLoad(tabId, async () => {
     if (!history) {
       await chrome.tabs.update(tabId, { url: target });
@@ -243,7 +251,7 @@ async function navigate(session_id: string, args: Record<string, unknown>): Prom
 const tabQueues = new Map<number, Promise<void>>();
 
 /** Runs `fn` after every earlier call on the same tab has finished (FIFO), so overlay hiding, captures and input sequences never interleave. */
-async function withTab<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
+async function withTab<T>(tabId: number, deadline: number, fn: () => Promise<T>): Promise<T> {
   const prev = tabQueues.get(tabId) ?? Promise.resolve();
   let release!: () => void;
   const mine = new Promise<void>((resolve) => { release = resolve; });
@@ -251,6 +259,7 @@ async function withTab<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
   tabQueues.set(tabId, tail);
   await prev;
   try {
+    assertBeforeDeadline(deadline);
     return await fn();
   } finally {
     release();
@@ -258,7 +267,7 @@ async function withTab<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function run(call: ToolCall): Promise<Outcome> {
+async function run(call: ToolCall, deadline: number): Promise<Outcome> {
   await ensureSession(call.session_id);
   if (call.tool === "tabs_list") {
     // A tab can wander off the allowlist (redirect, user); never leak its title or URL.
@@ -282,23 +291,23 @@ async function run(call: ToolCall): Promise<Outcome> {
   }
   if (call.tool === "tabs_close") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, async () => {
-      await assertOwned(call.session_id, tabId);
-      await chrome.tabs.remove(tabId);
-      return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
-    });
+    // Deliberately outside withTab: closing must work while the page is blocked; queued calls then fail on their own (tab gone).
+    await assertOwned(call.session_id, tabId);
+    await chrome.tabs.remove(tabId);
+    return { content: [{ type: "text", text: `Closed tab ${tabId}` }] };
   }
   if (call.tool === "navigate") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, () => navigate(call.session_id, call.args));
+    return withTab(tabId, deadline, () => navigate(call.session_id, call.args, deadline));
   }
   if (call.tool === "computer") {
     const action = String(call.args.action);
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, async () => {
+    return withTab(tabId, deadline, async () => {
       await authorize(call.session_id, tabId);
       const performed = action !== "screenshot";
       if (performed) {
+        assertBeforeDeadline(deadline);
         await perform(action, tabId, call.args);
         await settle(tabId);
       }
@@ -311,7 +320,7 @@ async function run(call: ToolCall): Promise<Outcome> {
   }
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
-    return withTab(tabId, () => readPage(call));
+    return withTab(tabId, deadline, () => readPage(call));
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
@@ -337,8 +346,9 @@ async function readPage(call: ToolCall): Promise<Outcome> {
 
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
+  const deadline = Date.now() + timeouts.callDeadlineMs;
   try {
-    return { ...base, ...(await run(call)) };
+    return { ...base, ...(await run(call, deadline)) };
   } catch (e) {
     if (e instanceof CdpError) return { ...base, error: { code: e.code, message: e.message } };
     return { ...base, error: { code: "internal", message: e instanceof Error ? e.message : String(e) } };
