@@ -2,7 +2,7 @@ import { handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { dispatch } from "./tools.ts";
-import { adoptTab, closeSession } from "./sessions.ts";
+import { adoptTab, closeSession, isOwned } from "./sessions.ts";
 import { startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
@@ -11,7 +11,7 @@ const hiderStats = { timeouts: 0 };
 
 // Hide the phantom overlay while capturing; a missing or slow content script must never fail the action.
 setOverlayHider(async (tabId, hidden) => {
-  const reply = sendWithInject(tabId, { type: "webop:overlay", hidden }).catch(() => {});
+  const reply = sendWithInject(tabId, { type: "webop:overlay", hidden }, isOwned).catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), HIDER_TIMEOUT_MS); });
   if ((await Promise.race([reply, timeout])) === "timeout") hiderStats.timeouts++;

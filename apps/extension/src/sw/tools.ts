@@ -4,7 +4,7 @@ import { CdpError, inputsSentTo, send, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertLive, assertOwned, createTab, ensureSession, listTabs } from "./sessions.ts";
+import { assertLive, assertOwned, createTab, ensureSession, isOwned, listTabs } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { checkSite, isSiteAllowed } from "./permissions.ts";
 
@@ -51,9 +51,10 @@ async function askContent<T>(tabId: number, msg: object): Promise<T> {
     timer = setTimeout(() => reject(new Error("timeout")), CONTENT_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([sendWithInject<T>(tabId, msg), timeout]);
+    return await Promise.race([sendWithInject<T>(tabId, msg, isOwned), timeout]);
   } catch (e) {
     if (!(await chrome.tabs.get(tabId).then(() => true, () => false))) throw new CdpError("tab_not_in_session", `Tab ${tabId} was closed.`);
+    if (e instanceof CdpError) throw e;
     const why = e instanceof Error ? e.message : String(e);
     throw new CdpError("internal", `Page content script not reachable (${why}). The page may be protected or still loading; reload the tab and retry.`);
   } finally {

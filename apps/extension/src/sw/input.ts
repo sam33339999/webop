@@ -1,4 +1,5 @@
 import { sendWithInject } from "./inject.ts";
+import { isOwned } from "./sessions.ts";
 import { send } from "./cdp.ts";
 import { MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, parseCombo } from "./keys.ts";
 
@@ -12,7 +13,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 /** Fire-and-forget: the overlay may not be injected yet (or the page may be restricted). */
 function moveCursor(tabId: number, x: number, y: number): void {
-  sendWithInject(tabId, { type: "webop:cursor", x, y }).catch(() => {});
+  sendWithInject(tabId, { type: "webop:cursor", x, y }, isOwned).catch(() => {});
 }
 
 function mouse(tabId: number, params: Record<string, unknown>): Promise<unknown> {

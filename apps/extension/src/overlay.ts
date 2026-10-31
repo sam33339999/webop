@@ -1,7 +1,12 @@
 // Phantom cursor and glow overlay. Lives in a closed-style shadow root so page CSS cannot touch it.
 // Injected on demand (and again after reloads); the flag keeps a second injection into the same document inert.
-if (!(window as unknown as Record<string, unknown>).__webopOverlay) {
-(window as unknown as Record<string, unknown>).__webopOverlay = true;
+// The guard is live only while this extension context is: after an extension reload the old context is orphaned (chrome.runtime.id is gone), so a fresh injection replaces its host.
+type Guard = { alive: () => boolean; dispose?: () => void };
+const guardHolder = window as unknown as { __wopOverlay?: Guard };
+if (guardHolder.__wopOverlay?.alive()) {
+  // already running in this document
+} else {
+guardHolder.__wopOverlay?.dispose?.();
 type OverlayMessage =
   | { type: "webop:cursor"; x: number; y: number }
   | { type: "webop:overlay"; hidden: boolean }
@@ -23,6 +28,7 @@ root.innerHTML = `
 const cursor = root.querySelector<SVGElement>(".cursor")!;
 const glow = root.querySelector<HTMLElement>(".glow")!;
 document.documentElement.appendChild(host);
+guardHolder.__wopOverlay = { alive: () => !!chrome.runtime?.id, dispose: () => host.remove() };
 
 chrome.runtime.onMessage.addListener((msg: OverlayMessage, _sender, sendResponse) => {
   if (msg.type === "webop:cursor") {
