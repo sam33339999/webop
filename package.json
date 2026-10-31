@@ -1,0 +1,21 @@
+{
+  "name": "webop",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "test": "node --test \"packages/*/test/*.test.ts\" \"apps/*/test/*.test.ts\"",
+    "typecheck": "pnpm -r exec tsc -p .",
+    "test:e2e": "pnpm --filter extension build:dev && pnpm --filter @webop/cli build && node --test --test-concurrency=1 tests/e2e/*.spec.ts",
+    "build:webop": "pnpm --filter @webop/cli build"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.0.0",
+    "typescript": "^7.0.2",
+    "@webop/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  }
+}

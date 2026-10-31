@@ -1,2 +1,9 @@
 # 參考用原始碼（Claude in Chrome 1.0.102），不納入版控
 /fcoeoabgfenejglbffodgkkbkcdhcgfn/
+
+# SDD 工作區（本機紀錄）
+/.superpowers/
+node_modules/
+apps/extension/dist/
+apps/extension/dist-dev/
+apps/webop/dist/

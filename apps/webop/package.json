@@ -1,0 +1,17 @@
+{
+  "name": "@webop/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@webop/core": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "scripts": {
+    "build": "node build.ts"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.ts",
+    "build:dev": "node build.ts --dev"
+  },
+  "dependencies": {
+    "@webop/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "esbuild": "^0.25.0"
+  }
+}
