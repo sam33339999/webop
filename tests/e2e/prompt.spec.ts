@@ -30,7 +30,12 @@ async function waitFor<T>(fn: () => T | undefined | false, what: string, ms = 10
   }
   throw new Error(`timed out waiting for ${what}`);
 }
-const popupOf = (h: Launched) => waitFor(() => promptPages(h)[0], "prompt window");
+// The prompt page fills in its text after asking the extension for the request, so wait until it has rendered.
+const popupOf = async (h: Launched) => {
+  const popup = await waitFor(() => promptPages(h)[0], "prompt window");
+  await popup.waitForFunction(() => (document.getElementById("site")?.textContent ?? "") !== "", undefined, { timeout: 10_000 });
+  return popup;
+};
 
 test("t_prompt_allow_once: popup shows client/site/level; 本次允許 resolves once", async () => {
   const h = await open();
