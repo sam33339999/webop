@@ -3,14 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { rootDir } from "./paths.ts";
 
-const HOST_NAME = "com.webop.native_host";
+export const HOST_NAME = "com.webop.native_host";
 
 function hostDir(browserDir?: string): string {
   const base = browserDir ?? path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome");
   return path.join(base, "NativeMessagingHosts");
 }
-const manifestFile = (browserDir?: string) => path.join(hostDir(browserDir), `${HOST_NAME}.json`);
-const wrapperFile = (root?: string) => path.join(rootDir(root), "bin", "webop-native-host");
+export const manifestFile = (browserDir?: string) => path.join(hostDir(browserDir), `${HOST_NAME}.json`);
+export const wrapperFile = (root?: string) => path.join(rootDir(root), "bin", "webop-native-host");
 const shQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 export function install(o: { browserDir?: string; webopCommand: string[]; extensionId: string; root?: string }): { manifestPath: string; wrapperPath: string } {

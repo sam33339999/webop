@@ -6,12 +6,26 @@ import { install, uninstall } from "./install.ts";
 import { runMcp } from "./mcp.ts";
 import { MCP_USAGE, parseMcpArgs } from "./mcp-args.ts";
 import { VERSION } from "./version.ts";
+import { doctor, formatChecks } from "./doctor.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
-const usage = "usage: webop --version | webop native-host | webop mcp [--profile <id|label>] [--image-max-px <n>] [--image-max-tokens <n>] [--px-per-token <n>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
+const usage = "usage: webop --version | webop doctor [--browser-dir <dir>]... | webop native-host | webop mcp [--profile <id|label>] [--image-max-px <n>] [--image-max-tokens <n>] [--px-per-token <n>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
 if (cmd === "--version" || cmd === "-v" || cmd === "version") {
   process.stdout.write(`webop ${VERSION}\n`);
   process.exit(0);
+} else if (cmd === "doctor") {
+  const browserDirs: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] !== "--browser-dir" || !rest[i + 1]) {
+      process.stderr.write("usage: webop doctor [--browser-dir <dir>]...\n");
+      process.exit(2);
+    }
+    browserDirs.push(rest[++i]!);
+  }
+  const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../extension/manifest.json", import.meta.url)), "utf8"));
+  const checks = await doctor({ browserDirs: browserDirs.length > 0 ? browserDirs : undefined, extensionId: await extensionIdFromKey(manifest.key) });
+  process.stdout.write(`webop ${VERSION}\n${formatChecks(checks)}\n`);
+  process.exit(checks.some((c) => c.level === "FAIL") ? 1 : 0);
 } else if (cmd === "native-host") {
   await runHost({ input: process.stdin, output: process.stdout });
   process.exit(0);
