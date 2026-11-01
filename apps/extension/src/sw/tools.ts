@@ -2,7 +2,7 @@ import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isDialogOpen, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
-import { getContext, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
+import { getContext, prepareForInput, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, budgetOf, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
@@ -550,6 +550,8 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         // tab that left the authorized site is not touched at all.
         await assertSameSite();
         await assertResponsive(tabId);
+        // The agent's tab is usually in the background; input to a tab that is not rendering never completes.
+        await prepareForInput(tabId);
         // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
         assertBeforeDeadline(ctx);
       }

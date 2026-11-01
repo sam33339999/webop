@@ -90,6 +90,29 @@ export async function screenshot(tabId: number, opts: { store?: boolean; budget?
   }
 }
 
+/**
+ * A background tab in a real browser renders no frames, and input sent to it (Input.dispatch*) is not processed until
+ * one is produced, so the command just hangs. Focus emulation plus a forced 1x1 capture makes the tab render.
+ * (Headless Chromium keeps rendering background tabs, so tests there never stall either way.)
+ */
+async function wake(tabId: number, p?: PageProbe): Promise<void> {
+  await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+  const probed = p ?? await probe(tabId);
+  if (probed.visibility !== "visible") {
+    await send(tabId, "Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 1,
+      clip: { x: probed.scrollX, y: probed.scrollY, width: 1, height: 1, scale: 1 },
+    });
+  }
+}
+
+/** Run before sending input to a tab: the agent's tabs are opened in the background and may not be rendering. */
+export async function prepareForInput(tabId: number): Promise<void> {
+  if (isDialogOpen(tabId)) return;
+  await wake(tabId);
+}
+
 async function fullScreenshot(tabId: number, opts: { store?: boolean; budget?: Budget }): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -98,14 +121,8 @@ async function fullScreenshot(tabId: number, opts: { store?: boolean; budget?: B
   try {
     await new Promise((resolve) => setTimeout(resolve, OVERLAY_SETTLE_MS));
     const p = await probe(tabId);
-    if (p.visibility !== "visible") {
-      // A hidden tab produces no frames until the browser is forced to render one.
-      await send(tabId, "Page.captureScreenshot", {
-        format: "jpeg",
-        quality: 1,
-        clip: { x: p.scrollX, y: p.scrollY, width: 1, height: 1, scale: 1 },
-      });
-    }
+    // A hidden tab produces no frames until the browser is forced to render one.
+    await wake(tabId, p);
     const { clipScale, outWidth, outHeight } = planCapture(p.width, p.height, p.dpr, opts.budget ?? DEFAULT_BUDGET);
     if (__DEV__) hiderLog.push({ tabId, at: "before" });
     const { data } = await send<{ data: string }>(tabId, "Page.captureScreenshot", {
