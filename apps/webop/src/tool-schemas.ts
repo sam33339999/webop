@@ -71,6 +71,16 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tab_id: z.number(), ref: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) },
   },
   {
+    tool: "javascript",
+    name: "browser_javascript",
+    description:
+      "Run JavaScript in the page and return its result as JSON (promises are awaited; 10 s limit; result capped at 50000 characters). " +
+      "Off by default: the user must enable the JavaScript tool in webop options and then allow it per site, so expect " +
+      "permission_denied. Prefer browser_get_page_text, browser_read_page and browser_form_input; use this only when they cannot do the job." +
+      SAFETY,
+    shape: { tab_id: z.number(), code: z.string() },
+  },
+  {
     tool: "computer",
     name: "browser_computer",
     description:

@@ -614,6 +614,10 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => formInput(call, ctx));
   }
+  if (call.tool === "javascript") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => runJavascript(call, ctx));
+  }
   if (call.tool === "get_page_text") {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => pageText(call, ctx));
@@ -696,6 +700,59 @@ async function formInput(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
   const { block, ctx: shotCtx } = shot;
   return { content: [{ type: "text", text: `${done} Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
+}
+
+const JS_TIMEOUT_MS = 10_000;
+const JS_MAX_CHARS = 50_000;
+
+type EvalReply = {
+  result: { type: string; value?: unknown; description?: string };
+  exceptionDetails?: { text: string; exception?: { description?: string } };
+};
+
+/** What the agent sees of an evaluation: the JSON value, `undefined`, or a description for values JSON cannot carry. */
+function describeResult(r: EvalReply): string {
+  if (r.exceptionDetails) return `Error: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`;
+  const { type, value, description } = r.result;
+  if (type === "undefined") return "undefined";
+  if (value === undefined) return description ?? type;
+  return JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * Runs agent-supplied code in the page (javascript level: off unless the user switched it on in options, and then asked
+ * per site). Exceptions in the code are a normal result, not a tool error. The result is withheld if the tab left a
+ * site this session may read.
+ */
+async function runJavascript(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const code = call.args.code;
+  if (typeof code !== "string" || code.trim() === "") invalid("code must be a non-empty string.");
+  await assertOwned(call.session_id, tabId);
+  const authorizedUrl = await currentUrl(tabId);
+  await gate(call.session_id, ctx, authorizedUrl, "javascript", { tabId, what: "no code was run" });
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  await assertStillOn(tabId, authorizedUrl);
+  await assertResponsive(tabId);
+  assertBeforeDeadline(ctx);
+  notePageChange(tabId);
+  let text: string;
+  try {
+    const r = await send<EvalReply>(tabId, "Runtime.evaluate", {
+      expression: code, awaitPromise: true, returnByValue: true, userGesture: false, timeout: JS_TIMEOUT_MS,
+    });
+    text = describeResult(r);
+  } catch (caught) {
+    const e = viaStop(caught, ctx);
+    if (e instanceof CdpError && (e.message.startsWith("Not performed") || e.code === "tab_not_in_session")) throw e;
+    const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
+    throw new CdpError(e instanceof CdpError ? e.code : "internal", `The code may have run: ${message}`);
+  }
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The code WAS run: the user pressed stop.");
+  if (text.length > JS_MAX_CHARS) text = `${text.slice(0, JS_MAX_CHARS)}…(truncated)`;
+  return { content: [{ type: "text", text }] };
 }
 
 async function pageText(call: ToolCall, ctx: CallContext): Promise<Outcome> {

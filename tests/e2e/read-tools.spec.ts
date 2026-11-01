@@ -181,3 +181,64 @@ test("t_form_input_unauthorized: an ungranted site asks for act; declining leave
   assert.match(e.message, /no field was changed/);
   assert.equal(await page.locator("#name").inputValue(), "");
 });
+
+// --- browser_javascript ---
+
+test("t_js_disabled_by_default: permission_denied without asking", async () => {
+  const h = await open({ localhost: ["act", "javascript"] });
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const e = errOf(await call(h.sw, "javascript", { tab_id, code: "document.title" }));
+  assert.equal(e.code, "permission_denied");
+  assert.match(e.message, /JavaScript execution is disabled/);
+  await noPopup(h);
+});
+
+test("t_js_enabled_asks: with the switch on, an ungranted site asks for the javascript level", async () => {
+  const h = await open();
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.js_enabled": true }));
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const r = call(h.sw, "javascript", { tab_id, code: "document.title" });
+  const popup = await popupOf(h);
+  assert.equal(await popup.locator("#level").textContent(), "javascript");
+  await popup.getByRole("button", { name: "本次允許" }).click();
+  assert.equal(textOf(await r), JSON.stringify("form2"));
+});
+
+test("t_js_act_grant_not_enough: a permanent act grant does not cover javascript", async () => {
+  const h = await open({ localhost: ["act"] });
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.js_enabled": true }));
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const r = call(h.sw, "javascript", { tab_id, code: "1 + 1" });
+  const popup = await popupOf(h);
+  await popup.getByRole("button", { name: "拒絕" }).click();
+  const e = errOf(await r);
+  assert.equal(e.code, "permission_denied");
+  assert.match(e.message, /no code was run/);
+});
+
+async function jsReady() {
+  const h = await open({ localhost: ["act", "javascript"] });
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.js_enabled": true }));
+  return { h, tab_id: await openTab(h.sw, `${h.baseUrl}/form2.html`) };
+}
+
+test("t_js_values: objects, promises and undefined come back as text", async () => {
+  const { h, tab_id } = await jsReady();
+  assert.equal(textOf(await call(h.sw, "javascript", { tab_id, code: "({ a: 1, b: [2, 'x'] })" })), '{"a":1,"b":[2,"x"]}');
+  assert.equal(textOf(await call(h.sw, "javascript", { tab_id, code: "new Promise((r) => setTimeout(() => r(42), 50))" })), "42");
+  assert.equal(textOf(await call(h.sw, "javascript", { tab_id, code: "void 0" })), "undefined");
+  assert.equal(errOf(await call(h.sw, "javascript", { tab_id, code: "  " })).code, "invalid_args");
+});
+
+test("t_js_exception: a throw is a result, not a tool error", async () => {
+  const { h, tab_id } = await jsReady();
+  const text = textOf(await call(h.sw, "javascript", { tab_id, code: "throw new Error('x')" }));
+  assert.match(text, /^Error: Error: x/);
+});
+
+test("t_js_truncate: long results are capped at 50000 characters", async () => {
+  const { h, tab_id } = await jsReady();
+  const text = textOf(await call(h.sw, "javascript", { tab_id, code: "'a'.repeat(60000)" }));
+  assert.ok(text.endsWith("…(truncated)"));
+  assert.equal(text.length, 50_000 + "…(truncated)".length);
+});

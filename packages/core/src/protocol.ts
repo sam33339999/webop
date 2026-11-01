@@ -8,7 +8,7 @@ export type ContentBlock = { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: "image/jpeg" | "image/png" };
 
 export type ToolName =
-  "tabs_list" | "tabs_create" | "tabs_close" | "navigate" | "read_page" | "get_page_text" | "form_input" | "computer"
+  "tabs_list" | "tabs_create" | "tabs_close" | "navigate" | "read_page" | "get_page_text" | "form_input" | "javascript" | "computer"
   | "profiles_list" | "profile_select";
 
 export interface ToolCall { id: string; session_id: string; tool: ToolName; args: Record<string, unknown> }

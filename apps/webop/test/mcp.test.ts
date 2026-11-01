@@ -57,7 +57,7 @@ test("lists the browser_ tools", async () => {
   const client = await connectClient({ root: tmpRoot() });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    "browser_computer", "browser_form_input", "browser_get_page_text", "browser_navigate", "browser_profile_select", "browser_profiles_list", "browser_read_page",
+    "browser_computer", "browser_form_input", "browser_get_page_text", "browser_javascript", "browser_navigate", "browser_profile_select", "browser_profiles_list", "browser_read_page",
     "browser_tabs_close", "browser_tabs_create", "browser_tabs_list",
   ]);
 });
