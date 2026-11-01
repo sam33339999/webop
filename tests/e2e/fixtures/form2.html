@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>form2</title></head>
+<body>
+<form onsubmit="event.preventDefault(); document.title = 'submitted'">
+  <label>Name <input id="name" type="text"></label>
+  <label>Password <input id="pw" type="password"></label>
+  <label>Notes <textarea id="notes"></textarea></label>
+  <label>Color <select id="color"><option value="r">Red</option><option value="g">Green</option><option value="b">Blue</option></select></label>
+  <label>Agree <input id="agree" type="checkbox"></label>
+  <label>Small <input id="small" type="radio" name="size" value="s"></label>
+  <label>Large <input id="large" type="radio" name="size" value="l"></label>
+  <label>Locked <input id="locked" type="text" readonly value="fixed"></label>
+  <div id="plain" role="textbox" aria-label="Plain" tabindex="0">not a field</div>
+  <button type="submit">Send</button>
+</form>
+<script>
+  window.events = { input: 0, change: 0 };
+  document.addEventListener("input", () => window.events.input++);
+  document.addEventListener("change", () => window.events.change++);
+</script>
+</body></html>

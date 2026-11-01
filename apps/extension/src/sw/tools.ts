@@ -1,10 +1,10 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, dropDetachNoticeSince, inputsSentTo, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
+import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isDialogOpen, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
-import { getContext, screenshot, withStopButtonHidden } from "./capture.ts";
+import { getContext, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
+import { assertLive, assertOwned, budgetOf, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { accessState, askInBackground, deniedError, isSiteReadable, requireAccess } from "./permissions.ts";
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
@@ -119,6 +119,17 @@ interface InputGuard {
   beforeInput(): Promise<void>;
 }
 
+/** computer actions that only look at the page (read level, no input). */
+const READ_ACTIONS: ReadonlySet<string> = new Set(["screenshot", "zoom"]);
+
+function regionArg(args: Record<string, unknown>): [number, number, number, number] {
+  const v = args.region;
+  if (!Array.isArray(v) || v.length !== 4 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    invalid("region must be [x0, y0, x1, y1] in screenshot coordinates.");
+  }
+  return [v[0], v[1], v[2], v[3]];
+}
+
 const INPUT_ACTIONS: ReadonlySet<string> = new Set([
   "left_click", "right_click", "double_click", "hover", "scroll_to", "left_click_drag", "type", "key", "scroll",
 ]);
@@ -221,6 +232,7 @@ async function assertResponsive(tabId: number): Promise<void> {
     await Promise.race([send(tabId, "Runtime.evaluate", { expression: "1", returnByValue: true }), dead]);
   } catch (e) {
     if (e instanceof CdpError && e.code !== "timeout") throw e;
+    if (isDialogOpen(tabId)) throw dialogError();
     throw new CdpError("timeout", "Not performed: the page is not responding (a JavaScript dialog or long-running script may be blocking it).");
   } finally {
     clearTimeout(timer);
@@ -329,6 +341,17 @@ async function recheck(session_id: string, tabId: number, performed: boolean, ct
   if (ctx.stopped()) throw stoppedError();
   askInBackground({ session_id, client_name, url, level: "read", tabId });
   throw new CdpError("permission_required", `${lead} tab is now on ${site}, which needs the user's approval; no content is returned. A prompt was shown to the user; after they allow it, retry (e.g. read_page).`);
+}
+
+/** Input may only go to the site the user authorized: a tab that moved (or is moving) elsewhere is not touched. */
+async function assertStillOn(tabId: number, authorizedUrl: string): Promise<void> {
+  const { url, pendingUrl } = await tabUrls(tabId);
+  const was = siteOf(authorizedUrl);
+  for (const u of [url, pendingUrl]) {
+    if (u !== undefined && siteOf(u) !== was) {
+      throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(u) ?? u} before input was sent.`);
+    }
+  }
 }
 
 /** Gives a navigation triggered by an action time to start, then waits for it to settle. */
@@ -503,7 +526,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, async () => {
       await assertOwned(call.session_id, tabId);
-      const performed = action !== "screenshot";
+      const performed = !READ_ACTIONS.has(action);
       const first = await currentUrl(tabId);
       if (!performed) {
         await requireReadable(call.session_id, tabId, ctx);
@@ -514,16 +537,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         await gate(call.session_id, ctx, first, "act", { tabId, marker: markerFor(action, tabId, call.args), what: "no input was sent" });
       }
       void showGlow(call.session_id, tabId, ctx.stopped);
-      const authorizedUrl = first;
-      const assertSameSite = async (): Promise<void> => {
-        const { url, pendingUrl } = await tabUrls(tabId);
-        const was = siteOf(authorizedUrl);
-        for (const u of [url, pendingUrl]) {
-          if (u !== undefined && siteOf(u) !== was) {
-            throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(u) ?? u} before input was sent.`);
-          }
-        }
-      };
+      const assertSameSite = () => assertStillOn(tabId, first);
       const guard: InputGuard = {
         async beforeInput() {
           if (__DEV__) await devHooks.afterTarget?.(tabId);
@@ -539,31 +553,43 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
         assertBeforeDeadline(ctx);
       }
+      const budget = await budgetOf(call.session_id);
+      if (action === "zoom") {
+        const region = regionArg(call.args);
+        const z = await zoom(tabId, region, budget);
+        await assertLive(call.session_id);
+        await recheck(call.session_id, tabId, false, ctx);
+        if (ctx.stopped()) throw stoppedError();
+        return { content: [{ type: "text", text: `Zoom of [${region.join(",")}] at ${z.width}x${z.height} px; coordinates still use the last screenshot frame.` }, z.block] };
+      }
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
           await withStopButtonHidden(tabId, () => perform(action, tabId, call.args, guard));
           await settle(tabId);
         }
+        // The input opened a dialog: the page's script thread is frozen until the user dismisses it. The action did land.
+        const blocked = performed && isDialogOpen(tabId);
+        const dialogNote = " The action WAS performed; a JavaScript dialog is now open and blocks the page, so nothing else will run until it is dismissed.";
         await assertLive(call.session_id);
         await recheck(call.session_id, tabId, performed, ctx);
         if (ctx.stopped()) throw stoppedError();
         let shot: Awaited<ReturnType<typeof screenshot>>;
         try {
-          shot = await screenshot(tabId);
+          shot = await screenshot(tabId, { budget });
         } catch (e) {
           // The action already went out in full; a failed capture must not read as a failed action.
           if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
           await assertLive(call.session_id);
           await recheck(call.session_id, tabId, performed, ctx);
           const why = e instanceof Error ? e.message : String(e);
-          return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
+          return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}${blocked ? dialogNote : ""}` }] };
         }
         await recheck(call.session_id, tabId, performed, ctx);
         // The user may have pressed stop while we were busy; the result is withheld.
         if (ctx.stopped()) throw stoppedError();
         const { block, ctx: shotCtx } = shot;
-        return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
+        return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.${blocked ? dialogNote : ""}` }, block] };
       } catch (caught) {
         const e = viaStop(caught, ctx);
         // Once input has gone out, a failure no longer means "nothing happened".
@@ -583,6 +609,18 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "read_page") {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => readPage(call, ctx));
+  }
+  if (call.tool === "form_input") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => formInput(call, ctx));
+  }
+  if (call.tool === "javascript") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => runJavascript(call, ctx));
+  }
+  if (call.tool === "get_page_text") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => pageText(call, ctx));
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
@@ -608,6 +646,132 @@ async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   return { content: [{ type: "text", text: r.text }] };
 }
 
+type FormInputReply = { ok: true; kind: string } | { error: "stale_ref" | "unsupported" | "bad_value"; message: string };
+
+/**
+ * Sets one form field by ref (act level). The value is never echoed back: it may be a password. The same checks as
+ * computer input apply: permission before the page is touched, the tab still on the authorized site, the page alive.
+ */
+async function formInput(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const { ref, value } = call.args;
+  if (typeof ref !== "string" || ref === "") invalid("ref must be a non-empty string.");
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") invalid("value must be a string, number or boolean.");
+  await assertOwned(call.session_id, tabId);
+  const authorizedUrl = await currentUrl(tabId);
+  await gate(call.session_id, ctx, authorizedUrl, "act", { tabId, what: "no field was changed" });
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  await assertStillOn(tabId, authorizedUrl);
+  await assertResponsive(tabId);
+  assertBeforeDeadline(ctx);
+  if (__DEV__) await devHooks.afterTarget?.(tabId);
+  await assertStillOn(tabId, authorizedUrl);
+  assertBeforeDeadline(ctx);
+  notePageChange(tabId);
+  let kind: string;
+  try {
+    const r = await askContent<FormInputReply | undefined>(tabId, { type: "webop:form_input", ref, value });
+    if (!r) throw new CdpError("internal", "Page content script returned no reply.");
+    if ("error" in r) {
+      // The page refused before changing anything.
+      if (r.error === "stale_ref") throw new CdpError("stale_ref", `Not performed: ${ref} ${r.message}; call read_page again to get fresh refs.`);
+      throw new CdpError("invalid_args", `Not performed: ${ref}: ${r.message}.`);
+    }
+    kind = r.kind;
+  } catch (caught) {
+    const e = viaStop(caught, ctx);
+    if (e instanceof CdpError && (e.message.startsWith("Not performed") || e.code === "tab_not_in_session")) throw e;
+    const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
+    throw new CdpError(e instanceof CdpError ? e.code : "internal", `The field may have been changed: ${message}`);
+  }
+  await settle(tabId);
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
+  const done = `Set ${kind} ${ref}.`;
+  let shot: Awaited<ReturnType<typeof screenshot>>;
+  try {
+    shot = await screenshot(tabId, { budget: await budgetOf(call.session_id) });
+  } catch (e) {
+    if (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code)) throw e;
+    return { content: [{ type: "text", text: `${done} Screenshot failed: ${e instanceof Error ? e.message : String(e)}` }] };
+  }
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
+  const { block, ctx: shotCtx } = shot;
+  return { content: [{ type: "text", text: `${done} Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
+}
+
+const JS_TIMEOUT_MS = 10_000;
+const JS_MAX_CHARS = 50_000;
+
+type EvalReply = {
+  result: { type: string; value?: unknown; description?: string };
+  exceptionDetails?: { text: string; exception?: { description?: string } };
+};
+
+/** What the agent sees of an evaluation: the JSON value, `undefined`, or a description for values JSON cannot carry. */
+function describeResult(r: EvalReply): string {
+  if (r.exceptionDetails) return `Error: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`;
+  const { type, value, description } = r.result;
+  if (type === "undefined") return "undefined";
+  if (value === undefined) return description ?? type;
+  return JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * Runs agent-supplied code in the page (javascript level: off unless the user switched it on in options, and then asked
+ * per site). Exceptions in the code are a normal result, not a tool error. The result is withheld if the tab left a
+ * site this session may read.
+ */
+async function runJavascript(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const code = call.args.code;
+  if (typeof code !== "string" || code.trim() === "") invalid("code must be a non-empty string.");
+  await assertOwned(call.session_id, tabId);
+  const authorizedUrl = await currentUrl(tabId);
+  await gate(call.session_id, ctx, authorizedUrl, "javascript", { tabId, what: "no code was run" });
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  await assertStillOn(tabId, authorizedUrl);
+  await assertResponsive(tabId);
+  assertBeforeDeadline(ctx);
+  notePageChange(tabId);
+  let text: string;
+  try {
+    const r = await send<EvalReply>(tabId, "Runtime.evaluate", {
+      expression: code, awaitPromise: true, returnByValue: true, userGesture: false, timeout: JS_TIMEOUT_MS,
+    });
+    text = describeResult(r);
+  } catch (caught) {
+    const e = viaStop(caught, ctx);
+    if (e instanceof CdpError && (e.message.startsWith("Not performed") || e.code === "tab_not_in_session")) throw e;
+    const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
+    throw new CdpError(e instanceof CdpError ? e.code : "internal", `The code may have run: ${message}`);
+  }
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The code WAS run: the user pressed stop.");
+  if (text.length > JS_MAX_CHARS) text = `${text.slice(0, JS_MAX_CHARS)}…(truncated)`;
+  return { content: [{ type: "text", text }] };
+}
+
+async function pageText(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  await assertOwned(call.session_id, tabId);
+  await requireReadable(call.session_id, tabId, ctx);
+  const { max_chars } = call.args;
+  if (max_chars !== undefined && (typeof max_chars !== "number" || !Number.isFinite(max_chars) || max_chars <= 0)) invalid("max_chars must be a positive number.");
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  const r = await askContent<{ text: string; truncated: boolean } | undefined>(tabId, { type: "webop:page_text", max_chars: max_chars ?? 50000 });
+  if (!r || typeof r.text !== "string") throw new CdpError("internal", "Page content script returned no reply.");
+  await assertLive(call.session_id);
+  // The text is handed back only if the tab is still on a site this session may read.
+  const url = await recheck(call.session_id, tabId, false, ctx);
+  const title = await chrome.tabs.get(tabId).then((t) => t.title ?? "", () => "");
+  const body = r.truncated ? `${r.text}\n…(truncated)` : r.text;
+  return { content: [{ type: "text", text: `Title: ${title}\nURL: ${url}\n\n${body}` }] };
+}
+
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
   const { ctx, close } = openCallContext(call.session_id, call.id);
@@ -622,7 +786,7 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
     // A stop that landed while the call was finishing: the result is not handed back.
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
-      const readOnly = call.tool === "read_page" || call.tool === "tabs_list" || (call.tool === "computer" && call.args.action === "screenshot");
+      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" || (call.tool === "computer" && READ_ACTIONS.has(String(call.args.action)));
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }
     return { ...base, ...outcome };

@@ -4,6 +4,8 @@ import net from "node:net";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { ExtToHost, HostToExt, HostToMcp, McpToHost } from "@webop/core/protocol";
+import type { Budget } from "@webop/core/budget";
+import { VERSION } from "./version.ts";
 import { encodeFrame, FrameDecoder } from "./framing.ts";
 import { readLines, writeLine } from "./ndjson.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
@@ -25,6 +27,14 @@ function isDead(pid: unknown): boolean {
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+/** A screenshot budget is passed through only when all three limits are sane positive integers. */
+function validBudget(b: unknown): Budget | undefined {
+  if (!isObj(b)) return undefined;
+  const ok = (n: unknown, max: number) => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= max;
+  if (!ok(b.pxPerToken, 1000) || !ok(b.maxTargetPx, 10000) || !ok(b.maxTargetTokens, 100000)) return undefined;
+  return { pxPerToken: b.pxPerToken as number, maxTargetPx: b.maxTargetPx as number, maxTargetTokens: b.maxTargetTokens as number };
 }
 
 function rmQuiet(p: string): void {
@@ -107,7 +117,9 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
         sessionId = id;
         sessions.set(id, sock);
         const clientName = typeof m.client_name === "string" ? m.client_name : "unknown";
-        sendToExt({ type: "session_open", session_id: id, client_name: clientName });
+        const budget = validBudget(m.budget);
+        if (m.budget !== undefined && !budget) log("dropped invalid budget in open");
+        sendToExt({ type: "session_open", session_id: id, client_name: clientName, ...(budget ? { budget } : {}) });
         const opened: HostToMcp = { type: "opened", session_id: id, profile_id: hello!.profile_id, profile_label: hello!.profile_label };
         writeLine(sock, opened);
         return;
@@ -130,6 +142,15 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
   };
 
   let hello: Hello | undefined;
+  /** A rename that arrived before the socket was up; applied when the descriptor is first written. */
+  let pendingLabel: string | undefined;
+  const writeDescriptor = (h: Hello, startedAt: string): void => {
+    fs.writeFileSync(
+      descriptorPath(h.profile_id, root),
+      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: myPid, started_at: startedAt }),
+    );
+  };
+  let startedAt = "";
   const startListening = async (h: Hello): Promise<void> => {
     const id = h.profile_id;
     const prev = readDescriptorPid(id);
@@ -147,20 +168,30 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
     });
     server = srv;
     fs.chmodSync(sp, 0o600);
-    fs.writeFileSync(
-      descriptorPath(id, root),
-      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: myPid, started_at: new Date().toISOString() }),
-    );
+    if (pendingLabel !== undefined) h = { ...h, profile_label: pendingLabel };
+    startedAt = new Date().toISOString();
+    writeDescriptor(h, startedAt);
     hello = h;
     profileId = id;
     owned = true;
-    log(`listening on ${sp}`);
+    log(`listening on ${sp} (webop ${VERSION}, extension ${String(h.extension_version)})`);
   };
 
   const onExtMessage = (raw: unknown): void => {
     if (!isObj(raw)) return log("dropped non-object ext message");
     const m = raw as Record<string, unknown>;
-    if (m.type === "hello") {
+    if (m.type === "profile_label") {
+      const label = typeof m.profile_label === "string" ? m.profile_label.trim() : "";
+      if (label === "" || label.length > 64) return log("dropped profile_label: must be 1-64 characters");
+      if (!hello) {
+        pendingLabel = label;
+        return;
+      }
+      hello = { ...hello, profile_label: label };
+      // Only the host that still owns the descriptor may rewrite it.
+      if (owned && readDescriptorPid(hello.profile_id) === myPid) writeDescriptor(hello, startedAt);
+      log(`profile label set to ${JSON.stringify(label)}`);
+    } else if (m.type === "hello") {
       if (hello) return log("ignored duplicate hello");
       if (typeof m.profile_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(m.profile_id)) return log("dropped hello with invalid profile_id");
       const h = m as unknown as Hello;

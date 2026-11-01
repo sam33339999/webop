@@ -32,3 +32,9 @@ test("planCapture grid stays within budget", () => {
     assert.ok(Math.max(p.outWidth, p.outHeight) <= 1568 && tokens(p.outWidth, p.outHeight) <= 1568, `${w}x${h}@${dpr}`);
   }
 });
+test("t_custom_budget: a smaller budget is honoured", () => {
+  const b = { pxPerToken: 28, maxTargetPx: 1024, maxTargetTokens: 1024 };
+  const p = planCapture(1920, 1080, 2, b);
+  assert.ok(Math.max(p.outWidth, p.outHeight) <= 1024, `${p.outWidth}x${p.outHeight}`);
+  assert.ok(tokens(p.outWidth, p.outHeight) <= 1024, `${tokens(p.outWidth, p.outHeight)} tokens`);
+});

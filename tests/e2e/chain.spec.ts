@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { launch, webopBin, type Launched } from "./harness.ts";
+import { jpegSize, launch, webopBin, type Launched } from "./harness.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 after(async () => { for (const f of cleanups.reverse()) await f().catch(() => {}); });
@@ -23,11 +23,11 @@ async function waitForDescriptor(root: string, ms = 10_000): Promise<void> {
   throw new Error("host descriptor never appeared");
 }
 
-async function mcpClient(root: string): Promise<Client> {
+async function mcpClient(root: string, extra: string[] = []): Promise<Client> {
   const client = new Client({ name: "chain-test", version: "0.0.0" });
   await client.connect(new StdioClientTransport({
     command: process.execPath,
-    args: [webopBin, "mcp"],
+    args: [webopBin, "mcp", ...extra],
     env: { ...(process.env as Record<string, string>), WEBOP_ROOT: root },
     stderr: "ignore",
   }));
@@ -139,4 +139,21 @@ test("host connection lost: the extension releases the session's tabs", async ()
   }
   assert.ok(released, "debugger still attached after the host connection dropped");
   assert.equal(await h.sw.evaluate((id) => chrome.tabs.get(id).then(() => true, () => false), tab_id), true);
+});
+
+test("t_session_budget: `webop mcp --image-max-px 800` caps this session's screenshots", async () => {
+  const h = await launch({ nativeHost: true, deviceScaleFactor: 2 });
+  cleanups.push(() => h.close());
+  await waitForDescriptor(h.root);
+  const client = await mcpClient(h.root, ["--image-max-px", "800"]);
+  const created = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${h.baseUrl}/button.html` } });
+  assert.ok(!created.isError, textOf(created));
+  const tab_id = JSON.parse(textOf(created)).tab_id as number;
+  const shot = await client.callTool({ name: "browser_computer", arguments: { action: "screenshot", tab_id } });
+  assert.ok(!shot.isError, textOf(shot));
+  const data = blocks(shot).find((b) => b.type === "image")?.data ?? "";
+  const { width, height } = jpegSize(Buffer.from(data, "base64"));
+  assert.ok(Math.max(width, height) <= 800, `${width}x${height}`);
+  assert.match(textOf(shot), new RegExp(`^Screenshot ${width}x${height} px`));
+
 });

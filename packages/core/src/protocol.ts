@@ -1,3 +1,5 @@
+import type { Budget } from "./budget.ts";
+
 export type ErrorCode = "not_connected" | "profile_required" | "permission_denied" | "permission_required"
   | "security_check_failed" | "oob" | "stale_ref" | "attach_failed" | "protected_page"
   | "detached_by_user" | "stopped_by_user" | "tab_not_in_session" | "timeout" | "invalid_args" | "internal";
@@ -5,7 +7,9 @@ export type ErrorCode = "not_connected" | "profile_required" | "permission_denie
 export type ContentBlock = { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: "image/jpeg" | "image/png" };
 
-export type ToolName = "tabs_list" | "tabs_create" | "tabs_close" | "navigate" | "read_page" | "computer";
+export type ToolName =
+  "tabs_list" | "tabs_create" | "tabs_close" | "navigate" | "read_page" | "get_page_text" | "form_input" | "javascript" | "computer"
+  | "profiles_list" | "profile_select";
 
 export interface ToolCall { id: string; session_id: string; tool: ToolName; args: Record<string, unknown> }
 
@@ -14,17 +18,18 @@ export type ToolResult = { id: string; session_id: string; content: ContentBlock
 
 // host → extension
 export type HostToExt = ({ type: "tool_call" } & ToolCall)
-  | { type: "session_open"; session_id: string; client_name: string }
+  | { type: "session_open"; session_id: string; client_name: string; budget?: Budget }
   | { type: "session_close"; session_id: string }
   | { type: "tool_cancel"; id: string; session_id: string };
 
 // extension → host
 export type ExtToHost = { type: "hello"; profile_id: string; profile_label: string; extension_version: string }
   | ({ type: "tool_result" } & ToolResult)
-  | { type: "tool_pending"; id: string; session_id: string; extend_ms: number };
+  | { type: "tool_pending"; id: string; session_id: string; extend_ms: number }
+  | { type: "profile_label"; profile_label: string };
 
 // mcp ⇄ host（socket）
-export type McpToHost = { type: "open"; client_name: string }
+export type McpToHost = { type: "open"; client_name: string; budget?: Budget }
   | { type: "call"; id: string; tool: ToolName; args: Record<string, unknown> }
   | { type: "cancel"; id: string };
 

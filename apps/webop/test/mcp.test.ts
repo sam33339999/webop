@@ -44,7 +44,7 @@ async function fakeHost(root: string, id: string, label: string, onCall: Handler
   await new Promise<void>((r) => srv.listen(socketPath(id, root), r));
   return { seen, socks, close: () => { socks.forEach((s) => s.destroy()); srv.close(); } };
 }
-async function connectClient(opts: { root: string; callTimeoutMs?: number }) {
+async function connectClient(opts: { root: string; callTimeoutMs?: number; profile?: string }) {
   const server = createMcpServer(opts);
   const client = new Client({ name: "test-agent", version: "1.0.0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -53,11 +53,11 @@ async function connectClient(opts: { root: string; callTimeoutMs?: number }) {
 }
 const text = (r: any) => r.content[0].text as string;
 
-test("lists six browser_ tools", async () => {
+test("lists the browser_ tools", async () => {
   const client = await connectClient({ root: tmpRoot() });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
-    "browser_computer", "browser_navigate", "browser_read_page",
+    "browser_computer", "browser_form_input", "browser_get_page_text", "browser_javascript", "browser_navigate", "browser_profile_select", "browser_profiles_list", "browser_read_page",
     "browser_tabs_close", "browser_tabs_create", "browser_tabs_list",
   ]);
 });
@@ -97,6 +97,106 @@ test("two descriptors → profile_required listing both labels", async () => {
   assert.match(text(r), /^profile_required:/);
   assert.match(text(r), /Work/);
   assert.match(text(r), /Personal/);
+});
+
+test("t_profiles_list: online profiles are listed with no selection", async () => {
+  const root = tmpRoot();
+  descriptor(root, "a", "Work");
+  descriptor(root, "b", "Personal");
+  const client = await connectClient({ root });
+  const r: any = await client.callTool({ name: "browser_profiles_list", arguments: {} });
+  assert.equal(r.isError, undefined, text(r));
+  assert.deepEqual(JSON.parse(text(r)), [
+    { profile_id: "a", profile_label: "Work", selected: false },
+    { profile_id: "b", profile_label: "Personal", selected: false },
+  ]);
+});
+
+test("t_select_then_call: calls go only to the selected profile", async () => {
+  const root = tmpRoot();
+  const answer = (tag: string): Handler => (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: tag }] });
+  const a = await fakeHost(root, "a", "Work", answer("A"));
+  const b = await fakeHost(root, "b", "Personal", answer("B"));
+  const client = await connectClient({ root });
+  const sel: any = await client.callTool({ name: "browser_profile_select", arguments: { profile: "personal" } });
+  assert.equal(sel.isError, undefined, text(sel));
+  assert.match(text(sel), /Selected Personal/);
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "B");
+  // Ids work too, by exact id, and switching drops the old connection.
+  await client.callTool({ name: "browser_profile_select", arguments: { profile: "a" } });
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "A");
+  const before = a.seen.filter((m) => m.type === "call").length;
+  await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(a.seen.filter((m) => m.type === "call").length, before + 1);
+  a.close();
+  b.close();
+});
+
+test("t_second_profile_mid_session: a profile appearing mid-session makes calls profile_required until one is selected", async () => {
+  const root = tmpRoot();
+  const a = await fakeHost(root, "a", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "A" }] }));
+  const client = await connectClient({ root });
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "A");
+  const b = await fakeHost(root, "b", "Personal", () => {});
+  await sleep(600);
+  const callsBefore = a.seen.filter((m) => m.type === "call").length;
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^profile_required:/);
+  assert.match(text(r), /Work \(a\)/);
+  assert.match(text(r), /Personal \(b\)/);
+  assert.equal(a.seen.filter((m) => m.type === "call").length, callsBefore, "the call was not forwarded");
+  await client.callTool({ name: "browser_profile_select", arguments: { profile: "a" } });
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "A");
+  a.close();
+  b.close();
+});
+
+test("t_bound_profile_gone: a selected profile going away answers not_connected, not the other profile", async () => {
+  const root = tmpRoot();
+  const a = await fakeHost(root, "a", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "A" }] }));
+  const b = await fakeHost(root, "b", "Personal", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "B" }] }));
+  const client = await connectClient({ root });
+  await client.callTool({ name: "browser_profile_select", arguments: { profile: "b" } });
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "B");
+  fs.rmSync(descriptorPath("b", root));
+  await sleep(600);
+  const callsBefore = a.seen.filter((m) => m.type === "call").length;
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^not_connected:/);
+  assert.match(text(r), /Personal/);
+  assert.equal(a.seen.filter((m) => m.type === "call").length, callsBefore);
+  a.close();
+  b.close();
+});
+
+test("t_cli_profile_flag: --profile pins by id or case-insensitive label before any call", async () => {
+  const root = tmpRoot();
+  const answer = (tag: string): Handler => (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: tag }] });
+  const a = await fakeHost(root, "a", "Work", answer("A"));
+  const b = await fakeHost(root, "b2", "Personal", answer("B"));
+  const byLabel = await connectClient({ root, profile: "PERSONAL" });
+  assert.equal(text(await byLabel.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "B");
+  const byId = await connectClient({ root, profile: "a" });
+  assert.equal(text(await byId.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "A");
+  const unknown = await connectClient({ root, profile: "nope" });
+  assert.match(text(await unknown.callTool({ name: "browser_tabs_list", arguments: {} }) as any), /^not_connected:/);
+  a.close();
+  b.close();
+});
+
+test("t_select_unknown_and_ambiguous", async () => {  const root = tmpRoot();
+  descriptor(root, "a1", "Work");
+  descriptor(root, "a2", "work");
+  const client = await connectClient({ root });
+  const none: any = await client.callTool({ name: "browser_profile_select", arguments: { profile: "nope" } });
+  assert.match(text(none), /^not_connected:/);
+  const ambiguous: any = await client.callTool({ name: "browser_profile_select", arguments: { profile: "WORK" } });
+  assert.match(text(ambiguous), /^profile_required:/);
 });
 
 test("call forwarded with stripped prefix; image content passed through", async () => {
@@ -285,4 +385,45 @@ test("timeout message reports the total waited after an extension", async () => 
   const ms = Number(/after (\d+) ms/.exec(text(r))?.[1]);
   assert.ok(ms >= 300, text(r));
   host.close();
+});
+
+test("t_budget_flags_sent: the screenshot budget goes out with open", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] }));
+  const server = createMcpServer({ root, budget: { pxPerToken: 28, maxTargetPx: 1024, maxTargetTokens: 1568 } });
+  const client = new Client({ name: "test-agent", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+  await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  const open = host.seen.find((m) => m.type === "open");
+  assert.deepEqual(open.budget, { pxPerToken: 28, maxTargetPx: 1024, maxTargetTokens: 1568 });
+  host.close();
+});
+
+test("no budget flags: open carries no budget", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] }));
+  const client = await connectClient({ root });
+  await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(host.seen.find((m) => m.type === "open").budget, undefined);
+  host.close();
+});
+
+test("t_bound_label_follows_rename: not_connected names the profile by its latest label", async () => {
+  const root = tmpRoot();
+  const b = await fakeHost(root, "b", "Personal", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "B" }] }));
+  descriptor(root, "a", "Work");
+  const client = await connectClient({ root });
+  await client.callTool({ name: "browser_profile_select", arguments: { profile: "b" } });
+  descriptor(root, "b", "Home");
+  await sleep(600);
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "B");
+  fs.rmSync(descriptorPath("b", root));
+  await sleep(600);
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^not_connected: Profile "Home" is not online/);
+  b.close();
 });

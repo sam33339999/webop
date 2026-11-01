@@ -2,6 +2,7 @@ import { bumpStopEpoch, cancelSession, stopEpochOf } from "./callctx.ts";
 import { ensureInjected, sendWithInject } from "./inject.ts";
 import { CdpError, detach, haltTab, onDetached, setTabGuard } from "./cdp.ts";
 import { abortBackgroundAsks, revokeSessionGrants } from "./permissions.ts";
+import type { Budget } from "@webop/core/budget";
 
 const COLORS = ["blue", "purple", "cyan", "green", "orange", "pink", "red", "yellow"] as const;
 const GLOW_COLORS: Record<(typeof COLORS)[number], string> = {
@@ -16,6 +17,8 @@ interface SessionState {
   tabIds: number[];
   /** Opened by the native host (as opposed to implicitly); these die with the host connection. */
   host: boolean;
+  /** Screenshot budget the agent asked for (`webop mcp --image-max-px` etc.); the default when absent. */
+  budget?: Budget;
 }
 interface Store { created: number; sessions: Record<string, SessionState>; closed: string[] }
 
@@ -73,11 +76,12 @@ function open(s: Store, session_id: string, client_name: string, host = false): 
 }
 
 /** Explicit open from the native host; reopens an id that was closed before. */
-export async function openSession(session_id: string, client_name: string): Promise<void> {
+export async function openSession(session_id: string, client_name: string, budget?: Budget): Promise<void> {
   await locked(async (s) => {
     s.closed = s.closed.filter((id) => id !== session_id);
     if (s.sessions[session_id]) return;
-    open(s, session_id, client_name, true);
+    const st = open(s, session_id, client_name, true);
+    if (budget) st.budget = budget;
     await persist(s);
   });
 }
@@ -246,7 +250,16 @@ export async function createTab(session_id: string, url: string, beforeCreate: (
     // The lock wait can be long; a stop (or cancel) that landed meanwhile must not open the tab.
     beforeCreate();
     const st = open(s, session_id, session_id);
-    const tab = await chrome.tabs.create({ url, active: false });
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.create({ url, active: false });
+    } catch (e) {
+      // The profile has no window to put the tab in (normally the link is dropped before an agent can get here).
+      if (String(e instanceof Error ? e.message : e).includes("No current window")) {
+        throw new CdpError("not_connected", "Not performed: this browser profile has no open window; ask the user to open one, then retry.");
+      }
+      throw e;
+    }
     if (tab.id === undefined) throw new CdpError("internal", "Created tab has no id.");
     await enroll(s, st, tab.id);
     return tab.id;
@@ -314,6 +327,11 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (__DEV__) console.warn("webop: content script injection failed", tabId, e);
   });
 });
+
+/** The session's screenshot budget, or undefined for the default. */
+export async function budgetOf(session_id: string): Promise<Budget | undefined> {
+  return locked((s) => s.sessions[session_id]?.budget);
+}
 
 /** Name the client gave when it opened the session (what the permission prompt shows); the id itself for implicit sessions. */
 export async function clientNameOf(session_id: string): Promise<string> {

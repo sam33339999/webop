@@ -1,4 +1,4 @@
-import { devFaults, handleDetach, send, timeouts } from "./cdp.ts";
+import { devEvents, devFaults, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { afterLoad, devHooks, dispatch } from "./tools.ts";
@@ -6,7 +6,7 @@ import { adoptTab, closeSession, isOwned, openSession, sessionDevHooks, stopAllS
 import { ask, promptTimeouts } from "./prompt.ts";
 import { grant, requireAccess, migrateAllowList, rearmReady, revokeSite } from "./permissions.ts";
 import { cancelCall, openCallContext, PENDING_MARGIN_MS, setPendingSink } from "./callctx.ts";
-import { startNativeLink, wakeNativeLink } from "./native.ts";
+import { linkState, nativeDevHooks, onWindowClosed, onWindowOpened, startNativeLink, wakeNativeLink } from "./native.ts";
 
 const HIDER_TIMEOUT_MS = 200;
 /** Dev-only: how often the hider gave up waiting for the content script's reply. */
@@ -55,8 +55,9 @@ if (__DEV__) {
     handleDetach(tabId, reason);
   };
   /** Test-only: shortens the CDP send timeout and the per-call deadline. */
-  const setTimeouts = (t: { cdpSendMs?: number; callDeadlineMs?: number; probeMs?: number }): void => {
+  const setTimeouts = (t: { cdpSendMs?: number; inputSendMs?: number; callDeadlineMs?: number; probeMs?: number }): void => {
     if (t.cdpSendMs !== undefined) timeouts.cdpSendMs = t.cdpSendMs;
+    if (t.inputSendMs !== undefined) timeouts.inputSendMs = t.inputSendMs;
     if (t.callDeadlineMs !== undefined) timeouts.callDeadlineMs = t.callDeadlineMs;
     if (t.probeMs !== undefined) timeouts.probeMs = t.probeMs;
   };
@@ -87,5 +88,5 @@ if (__DEV__) {
     const id = opts?.closeSession;
     devFaults.beforeFail = id === undefined ? undefined : () => closeSession(id);
   };
-  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, adoptTab, openSession, stopEpoch, stopSession, sessionDevHooks, actionClicked: onActionClicked, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks };
+  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, devEvents, adoptTab, openSession, stopEpoch, stopSession, sessionDevHooks, actionClicked: onActionClicked, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks, nativeDevHooks, onWindowClosed, onWindowOpened, linkState };
 }
