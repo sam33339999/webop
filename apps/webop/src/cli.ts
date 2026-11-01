@@ -5,10 +5,14 @@ import { runHost } from "./host.ts";
 import { install, uninstall } from "./install.ts";
 import { runMcp } from "./mcp.ts";
 import { MCP_USAGE, parseMcpArgs } from "./mcp-args.ts";
+import { VERSION } from "./version.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
-const usage = "usage: webop native-host | webop mcp [--profile <id|label>] [--image-max-px <n>] [--image-max-tokens <n>] [--px-per-token <n>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
-if (cmd === "native-host") {
+const usage = "usage: webop --version | webop native-host | webop mcp [--profile <id|label>] [--image-max-px <n>] [--image-max-tokens <n>] [--px-per-token <n>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
+if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+  process.stdout.write(`webop ${VERSION}\n`);
+  process.exit(0);
+} else if (cmd === "native-host") {
   await runHost({ input: process.stdin, output: process.stdout });
   process.exit(0);
 } else if (cmd === "mcp") {
@@ -33,7 +37,7 @@ if (cmd === "native-host") {
   const out = install({ browserDir, extensionId, webopCommand: [process.execPath, scriptPath] });
   const commandJson = [process.execPath, scriptPath, "mcp"].map((x) => JSON.stringify(x)).join(", ");
   const opencode = `{\n  "mcp": {\n    "webop": {\n      "type": "local",\n      "command": [${commandJson}],\n      "enabled": true\n    }\n  }\n}`;
-  process.stdout.write(`extension id: ${extensionId}\nmanifest: ${out.manifestPath}\nwrapper: ${out.wrapperPath}\n\nAdd this to your opencode config:\n${opencode}\n`);
+  process.stdout.write(`webop ${VERSION}\nextension id: ${extensionId}\nmanifest: ${out.manifestPath}\nwrapper: ${out.wrapperPath}\n\nAdd this to your opencode config:\n${opencode}\n`);
   process.exit(0);
 } else if (cmd === "uninstall") {
   const i = rest.indexOf("--browser-dir");

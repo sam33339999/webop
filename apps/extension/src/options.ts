@@ -50,6 +50,7 @@ async function init(): Promise<void> {
   // Opening this page is the recovery path after `webop install` ran later than the extension was loaded.
   chrome.runtime.sendMessage({ type: "webop:wake" }).catch(() => {});
   $("ext-id").textContent = chrome.runtime.id;
+  $("version").textContent = chrome.runtime.getManifest().version;
   const stored = await chrome.storage.local.get([PROFILE_KEY, DENY_KEY, JS_KEY, LABEL_KEY]);
   $("profile-id").textContent = typeof stored[PROFILE_KEY] === "string" ? stored[PROFILE_KEY] : "(not registered yet)";
 

@@ -226,7 +226,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 - Chrome 版本：
 - opencode 版本：
 
-先重新 build（`pnpm -r build`），在 `chrome://extensions` 重新載入擴充功能（manifest 新增了 `identity` 權限，Chrome 可能要你確認），再完整重啟 opencode（含 `pkill -f "opencode serve"`）。
+先重新 build（`pnpm -r build`），確認 `node apps/webop/dist/webop.mjs --version` 印出 `webop 0.5.0`；在 `chrome://extensions` 重新載入擴充功能，確認卡片（或 options 頁的 Version）也是 `0.5.0`（manifest 新增了 `identity` 權限，Chrome 可能要你確認），再完整重啟 opencode（含 `pkill -f "opencode serve"`）。
 
 | # | 步驟 | 預期 | 結果（通過／失敗＋備註） |
 |---|---|---|---|

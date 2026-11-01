@@ -9,6 +9,7 @@ import { readLines, writeLine } from "./ndjson.ts";
 import { logDir, runDir, socketPath } from "./paths.ts";
 import { TOOL_DEFS } from "./tool-schemas.ts";
 import type { Budget } from "@webop/core/budget";
+import { VERSION } from "./version.ts";
 
 const MAX_EXTEND_MS = 600_000;
 
@@ -67,7 +68,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; p
   const root = opts.root;
   const callTimeoutMs = opts.callTimeoutMs ?? 60_000;
   const pinned = opts.profile;
-  const server = new McpServer({ name: "webop", version: "0.0.0" });
+  const server = new McpServer({ name: "webop", version: VERSION });
   let conn: Conn | null = null;
   let connecting: Promise<Conn | Outcome> | null = null;
   let nextId = 1;
@@ -308,7 +309,7 @@ export async function runMcp(o: { profile?: string; budget?: Budget } = {}): Pro
   process.on("uncaughtException", (e) => log(`uncaughtException ${e.stack ?? e}`));
   process.on("unhandledRejection", (e) => log(`unhandledRejection ${e}`));
   await server.connect(new StdioServerTransport());
-  log("mcp server started");
+  log(`mcp server started (webop ${VERSION})`);
   await new Promise<void>((resolve) => {
     process.stdin.once("close", resolve);
     process.stdin.once("end", resolve);

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { ExtToHost, HostToExt, HostToMcp, McpToHost } from "@webop/core/protocol";
 import type { Budget } from "@webop/core/budget";
+import { VERSION } from "./version.ts";
 import { encodeFrame, FrameDecoder } from "./framing.ts";
 import { readLines, writeLine } from "./ndjson.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
@@ -173,7 +174,7 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
     hello = h;
     profileId = id;
     owned = true;
-    log(`listening on ${sp}`);
+    log(`listening on ${sp} (webop ${VERSION}, extension ${String(h.extension_version)})`);
   };
 
   const onExtMessage = (raw: unknown): void => {
