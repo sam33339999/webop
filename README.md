@@ -2,7 +2,7 @@
 
 English | [繁體中文](README.zh-tw.md)
 
-webop lets any MCP-capable coding agent (opencode, grok CLI, …) drive **the Chrome you already use**: with your logins and cookies, on the sites you allow, while you watch and can stop it at any moment.
+**webop** (short for *web operation*) lets any MCP-capable coding agent (opencode, grok CLI, …) drive **the Chrome you already use**: with your logins and cookies, on the sites you allow, while you watch and can stop it at any moment.
 
 It is a Manifest V3 browser extension plus a small `webop` command-line program. The agent talks to `webop` over stdio MCP; `webop` relays to the extension through Chrome's Native Messaging; the extension acts on the page through `chrome.debugger`.
 

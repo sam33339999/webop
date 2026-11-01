@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-webop 讓任何支援 MCP 的 coding agent（opencode、grok CLI…）操作**你平常在用的 Chrome**：帶著你的登入狀態和 cookie，只在你允許的網站上動作，過程看得到，隨時可以停。
+**webop**（*web operation* 的縮寫）讓任何支援 MCP 的 coding agent（opencode、grok CLI…）操作**你平常在用的 Chrome**：帶著你的登入狀態和 cookie，只在你允許的網站上動作，過程看得到，隨時可以停。
 
 它由一個 Manifest V3 擴充功能和一支小小的 `webop` 命令列程式組成。agent 透過 stdio MCP 跟 `webop` 溝通；`webop` 經由 Chrome 的 Native Messaging 轉給擴充功能；擴充功能再用 `chrome.debugger` 操作頁面。
 
