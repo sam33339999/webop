@@ -5,6 +5,7 @@ import { closeHostSessions, closeSession, openSession } from "./sessions.ts";
 
 const HOST = "com.webop.native_host";
 const PROFILE_KEY = "webop.profile_id";
+const LABEL_KEY = "webop.profile_label";
 
 const STABLE_MS = 5000;
 let port: chrome.runtime.Port | undefined;
@@ -20,6 +21,27 @@ async function profileId(): Promise<string> {
   await chrome.storage.local.set({ [PROFILE_KEY]: id });
   return id;
 }
+
+/** What agents see for this profile: the name set in options, else the signed-in email, else `profile-<id prefix>`. */
+export async function profileLabel(id: string): Promise<string> {
+  const saved = (await chrome.storage.local.get(LABEL_KEY))[LABEL_KEY];
+  if (typeof saved === "string" && saved.trim()) return saved.trim().slice(0, 64);
+  try {
+    const info = await chrome.identity.getProfileUserInfo({ accountStatus: chrome.identity.AccountStatus.ANY });
+    if (info.email) return info.email;
+  } catch {
+    // identity unavailable (e.g. not signed in, or the API is missing): fall back to the id
+  }
+  return `profile-${id.slice(0, 6)}`;
+}
+
+// A rename in options reaches the host right away, so `browser_profiles_list` shows it without a restart.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !(LABEL_KEY in changes)) return;
+  const p = port;
+  if (!p) return;
+  void profileId().then(profileLabel).then((profile_label) => { if (port === p) post(p, { type: "profile_label", profile_label }); });
+});
 
 function post(p: chrome.runtime.Port, msg: ExtToHost): void {
   try { p.postMessage(msg); } catch { /* port already gone; onDisconnect handles it */ }
@@ -50,6 +72,7 @@ async function connect(): Promise<void> {
   let p: chrome.runtime.Port;
   try {
     const id = await profileId();
+    const label = await profileLabel(id);
     // Sessions that outlived their host connection (e.g. the SW was restarted) are stale.
     await closeHostSessions();
     p = chrome.runtime.connectNative(HOST);
@@ -66,7 +89,7 @@ async function connect(): Promise<void> {
       if (Date.now() - connectedAt >= STABLE_MS) attempts = 0;
       scheduleReconnect();
     });
-    post(p, { type: "hello", profile_id: id, profile_label: `profile-${id.slice(0, 6)}`, extension_version: chrome.runtime.getManifest().version });
+    post(p, { type: "hello", profile_id: id, profile_label: label, extension_version: chrome.runtime.getManifest().version });
     connectedAt = Date.now();
   } catch {
     port = undefined;

@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr1TGuwOqmVqfTacEat7Fhu98w8fPX9gjEj6DYWLgxq6ekruTcpeIgQRsiFrL29MjJVuJz43ci5Y9pRJMtTYez32yyoDD1KDqSJnXoJAdG4JPw9RvKy06n9gLLM1WN7Yl6ldEt4sDaVG9dBJR6f6EiazYSjyR5K43EcI/X4nHhNao79xXKt1AwqfqD+SEDkC1tufjftEy6eQT4cLPe8QDoSrelsGM3gPwzrZmuKMzzltRijYWwUgrSOqlPgBUfOXBl1pG9lFMAD8v4qT6pvfTbiUfudYKXqNvio7i4wT94XP0zd2zy0WsTvBtjDS6BsZEF4JdWXLVlHAj4mQNv8jeiQIDAQAB",
-  "permissions": ["debugger", "tabs", "tabGroups", "scripting", "storage", "nativeMessaging"],
+  "permissions": ["debugger", "tabs", "tabGroups", "scripting", "storage", "nativeMessaging", "identity", "identity.email"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "sw.js", "type": "module" },
   "action": {},

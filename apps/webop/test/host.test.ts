@@ -276,3 +276,40 @@ test("cancel from mcp is relayed to the extension as tool_cancel with its sessio
   assert.deepEqual(t.fromHost.find((m) => m.type === "tool_cancel"), { type: "tool_cancel", id: "7", session_id: a.msgs[0].session_id });
   a.c.destroy(); t.input.end(); await t.done;
 });
+
+test("t_profile_label_updates_descriptor: profile_label rewrites the label; opened reports the new one", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  t.input.write(encodeFrame({ type: "profile_label", profile_label: "  Personal  " }));
+  const label = () => JSON.parse(fs.readFileSync(descriptorPath("p1", t.root), "utf8")).profile_label;
+  await until(() => label() === "Personal");
+  const a = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "x" });
+  await until(() => a.msgs.some((m) => m.type === "opened"));
+  assert.equal(a.msgs.find((m) => m.type === "opened").profile_label, "Personal");
+  a.c.destroy();
+  t.input.end(); await t.done;
+});
+
+test("t_profile_label_invalid_ignored: empty or over-long labels leave the descriptor alone", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  t.input.write(encodeFrame({ type: "profile_label", profile_label: "   " }));
+  t.input.write(encodeFrame({ type: "profile_label", profile_label: "x".repeat(65) }));
+  t.input.write(encodeFrame({ type: "profile_label", profile_label: 42 }));
+  await sleep(100);
+  assert.equal(JSON.parse(fs.readFileSync(descriptorPath("p1", t.root), "utf8")).profile_label, "Work");
+  t.input.end(); await t.done;
+});
+
+test("t_profile_label_before_listen: a label sent right after hello is not lost", async () => {
+  const t = setup();
+  t.sendHello();
+  t.input.write(encodeFrame({ type: "profile_label", profile_label: "Early" }));
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const label = () => JSON.parse(fs.readFileSync(descriptorPath("p1", t.root), "utf8")).profile_label;
+  await until(() => label() === "Early");
+  t.input.end(); await t.done;
+});

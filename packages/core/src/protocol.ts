@@ -22,7 +22,8 @@ export type HostToExt = ({ type: "tool_call" } & ToolCall)
 // extension → host
 export type ExtToHost = { type: "hello"; profile_id: string; profile_label: string; extension_version: string }
   | ({ type: "tool_result" } & ToolResult)
-  | { type: "tool_pending"; id: string; session_id: string; extend_ms: number };
+  | { type: "tool_pending"; id: string; session_id: string; extend_ms: number }
+  | { type: "profile_label"; profile_label: string };
 
 // mcp ⇄ host（socket）
 export type McpToHost = { type: "open"; client_name: string }

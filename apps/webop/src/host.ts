@@ -130,6 +130,15 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
   };
 
   let hello: Hello | undefined;
+  /** A rename that arrived before the socket was up; applied when the descriptor is first written. */
+  let pendingLabel: string | undefined;
+  const writeDescriptor = (h: Hello, startedAt: string): void => {
+    fs.writeFileSync(
+      descriptorPath(h.profile_id, root),
+      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: myPid, started_at: startedAt }),
+    );
+  };
+  let startedAt = "";
   const startListening = async (h: Hello): Promise<void> => {
     const id = h.profile_id;
     const prev = readDescriptorPid(id);
@@ -147,10 +156,9 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
     });
     server = srv;
     fs.chmodSync(sp, 0o600);
-    fs.writeFileSync(
-      descriptorPath(id, root),
-      JSON.stringify({ profile_id: h.profile_id, profile_label: h.profile_label, pid: myPid, started_at: new Date().toISOString() }),
-    );
+    if (pendingLabel !== undefined) h = { ...h, profile_label: pendingLabel };
+    startedAt = new Date().toISOString();
+    writeDescriptor(h, startedAt);
     hello = h;
     profileId = id;
     owned = true;
@@ -160,7 +168,18 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
   const onExtMessage = (raw: unknown): void => {
     if (!isObj(raw)) return log("dropped non-object ext message");
     const m = raw as Record<string, unknown>;
-    if (m.type === "hello") {
+    if (m.type === "profile_label") {
+      const label = typeof m.profile_label === "string" ? m.profile_label.trim() : "";
+      if (label === "" || label.length > 64) return log("dropped profile_label: must be 1-64 characters");
+      if (!hello) {
+        pendingLabel = label;
+        return;
+      }
+      hello = { ...hello, profile_label: label };
+      // Only the host that still owns the descriptor may rewrite it.
+      if (owned && readDescriptorPid(hello.profile_id) === myPid) writeDescriptor(hello, startedAt);
+      log(`profile label set to ${JSON.stringify(label)}`);
+    } else if (m.type === "hello") {
       if (hello) return log("ignored duplicate hello");
       if (typeof m.profile_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(m.profile_id)) return log("dropped hello with invalid profile_id");
       const h = m as unknown as Hello;

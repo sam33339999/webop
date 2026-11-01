@@ -4,6 +4,7 @@ const PROFILE_KEY = "webop.profile_id";
 const GRANTS_KEY = "webop.grants";
 const DENY_KEY = "webop.deny";
 const JS_KEY = "webop.js_enabled";
+const LABEL_KEY = "webop.profile_label";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 /** "example.com", "https://www.Example.com/x" or "localhost" -> the site key the deny list stores. */
@@ -49,8 +50,19 @@ async function init(): Promise<void> {
   // Opening this page is the recovery path after `webop install` ran later than the extension was loaded.
   chrome.runtime.sendMessage({ type: "webop:wake" }).catch(() => {});
   $("ext-id").textContent = chrome.runtime.id;
-  const stored = await chrome.storage.local.get([PROFILE_KEY, DENY_KEY, JS_KEY]);
+  const stored = await chrome.storage.local.get([PROFILE_KEY, DENY_KEY, JS_KEY, LABEL_KEY]);
   $("profile-id").textContent = typeof stored[PROFILE_KEY] === "string" ? stored[PROFILE_KEY] : "(not registered yet)";
+
+  const label = $<HTMLInputElement>("profile-label");
+  label.value = typeof stored[LABEL_KEY] === "string" ? stored[LABEL_KEY] : "";
+  $("save-label").addEventListener("click", async () => {
+    const value = label.value.trim().slice(0, 64);
+    // An empty name falls back to the signed-in email (the SW sends the new label to the host on change).
+    if (value) await chrome.storage.local.set({ [LABEL_KEY]: value });
+    else await chrome.storage.local.remove(LABEL_KEY);
+    label.value = value;
+    $("label-status").textContent = "Saved.";
+  });
   await renderGrants();
 
   const area = $<HTMLTextAreaElement>("deny");
