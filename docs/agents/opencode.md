@@ -235,17 +235,23 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 | 2 | 請 agent 用 `browser_form_input` 在搜尋框填一段文字（不要送出） | 欄位出現文字、沒有送出；回傳 `Set … ref_N.` 加截圖，回傳文字不含所填內容 | 通過。Wikipedia 側欄搜尋框（`searchbox "Search Wikipedia" [ref_2]`）：回 `Set search input ref_2.` 加截圖，欄位顯示 `webop acceptance test`、網址仍是 `…/Web_browser`（未送出），回傳文字不含填入內容。 |
 | 3 | 請 agent 先截圖，再用 `zoom` 放大頁面某一區並描述 | 回傳 `Zoom of [...] at WxH px` 與放大圖；之後用原截圖座標點擊仍點得準 | 通過。截圖 `Screenshot 1568x606 px`；`zoom` 區域 `[380,40,1000,240]` 回 `Zoom of [380,40,1000,240] at 1360x438 px`（約 2.2 倍），可清楚辨識標題、Article／Talk 分頁與目錄。之後用**原截圖座標** `(455,119)` 點左側目錄的「History」精準命中，頁面捲到 History 段、該目錄項變為選取。 |
 | 4 | 開第二個載入 webop 的 Chrome profile，再請 agent 做任一操作 | 回 `profile_required`，列出兩個 profile；請 agent `browser_profile_select` 第二個後，新分頁只出現在第二個 profile | 通過。第二個 profile 上線後，`browser_tabs_create` 回 `profile_required: Multiple browser profiles are online: profile-600b0f (600b0f4f-…), profile-841e4d (841e4df4-…)`。`browser_profile_select { profile: "profile-841e4d" }` 後開 `https://example.org`，新分頁只出現在第二個 profile 的視窗，第一個 profile 沒有多出分頁。 |
-| 5 | 承上，把選定的那個 profile 視窗全部關掉，再請 agent 操作 | 回 `not_connected` 並點名該 profile，不會改去操作另一個 | 部分通過／步驟需修正。只關閉該 profile 的所有視窗**不會**讓它離線：擴充功能的 service worker 因持有 native messaging 連線而不被回收（實測 kill 掉該 profile 的 host 後 4 秒內自動重連、生成新 host），此時 `browser_tabs_create` 回的是 `internal: No current window`，`browser_profiles_list` 仍把該 profile 列為在線。整個 Brave 結束後才得到預期結果：`not_connected: Profile "profile-841e4d" is not online. Online: none.`，且全程沒有改去操作另一個 profile。建議把步驟改成「完全結束該 profile 的瀏覽器（或停用該 profile 的 webop 擴充功能）」；根本修正見下方「待修正問題：關掉 profile 視窗後仍被視為在線」。另註：選定後才改的顯示名稱不會更新到已綁定 session 的錯誤訊息（仍顯示選定當時的舊 label `profile-841e4d`），要等下一個 session 才會用新名稱。 |
+| 5 | 承上，把選定的那個 profile 視窗全部關掉，再請 agent 操作 | 回 `not_connected` 並點名該 profile，不會改去操作另一個 | 通過（0.5.1 重測；0.5.0 時失敗，回 `internal: No current window`，詳見下方重測紀錄）。只關掉 `clean` 的所有視窗、Brave 與 `normal` 仍開著時，回 `not_connected: Profile "clean" is not online. Online: normal (600b0f4f-…)`；`browser_profiles_list` 只剩 `normal`；host 與 descriptor 都清除且未 respawn；沒有改去操作另一個 profile。重開 `clean` 視窗後下一個呼叫自動重連並正常運作。 |
 | 6 | 請 agent 用 `browser_javascript` 讀 `document.title` | 預設回 `permission_denied`（JavaScript 未開啟），不跳詢問；在 options 打開開關後再試，跳出等級 `javascript` 的詢問，允許後回傳標題字串 | 通過。options 的全域開關關閉時回 `permission_denied: JavaScript execution is disabled in webop options (site "wikipedia.org").`，不跳詢問。打開開關後在 `iana.org`、`httpbin.org` 各跳一次等級 `javascript` 的詢問，允許後分別回傳 `"Example Domains"` 與 `""`。 |
 | 7 | 在 options 頁的 `Profile name` 改名並 Save | `browser_profiles_list` 立即顯示新名稱 | 通過。把兩個 profile 分別改名為 `normal`、`clean` 並 Save 後，不必重啟，`browser_profiles_list` 立即回 `normal`／`clean`（原本是 `profile-600b0f`／`profile-841e4d`）。 |
 
-**0.5.1 重測第 5 項**（重新 build、重新載入擴充功能、確認版本為 `0.5.1` 後，只關掉選定 profile 的所有視窗，不結束瀏覽器）：結果：
+**0.5.1 重測第 5 項**（重新 build、重新載入擴充功能、確認版本為 `0.5.1` 後，只關掉選定 profile 的所有視窗，不結束瀏覽器）：結果：**通過**。
+
+- 關閉 `clean` 的所有視窗、Brave 與 `normal` 仍開著時：`browser_tabs_list` 與 `browser_tabs_create` 都回 `not_connected: Profile "clean" is not online. Online: normal (600b0f4f-…)`，且用的是最新的顯示名稱 `clean`（0.5.0 會顯示舊 label `profile-841e4d`）。
+- `browser_profiles_list` 只剩 `normal`；`clean` 的 host 程序已退出、descriptor 與 socket 已刪除，數分鐘內沒有自動 respawn；全程沒有改去操作 `normal`。
+- 重開 `clean` 的一個視窗後，不需重啟 opencode，下一個呼叫就自動重連（`selected: true`），`browser_tabs_create` 與 `browser_get_page_text` 均正常。
+
+總結（0.5.1）：**7 項全數通過**。第 5 項的失敗已在 0.5.1 修正（`5ffd629`），行為改為「關掉 profile 的最後一個 normal 視窗即離線、重開視窗自動重連」；文件與 options 的顯示名稱也改為即時。
 
 總結（0.5.0）：7 項中 6 項通過。第 5 項的「把 profile 視窗全部關掉」在 macOS 上不會讓該 profile 離線——service worker 只要還持有 native messaging 連線就不會被回收，host 也就不會退出（kill 掉 host 後 4 秒內自動重連）；要等到整個瀏覽器結束（或停用該 profile 的擴充功能）才會回 `not_connected`。其餘觀察：`webop mcp` 回報版本與 manifest 皆為 `0.5.0`；受測環境沒有已登入網站，第 1 項以公開頁面驗證；兩個 profile 的改名即時反映在 `browser_profiles_list`，但已綁定 session 的 `not_connected` 訊息仍顯示選定當時的舊 label（`profile-841e4d`）。
 
-### 待修正問題：關掉 profile 視窗後仍被視為在線（M5 #5）
+### 已修正（0.5.1）：關掉 profile 視窗後仍被視為在線（M5 #5）
 
-**狀態**：已在 0.5.1 修正（依下方「修正方向」1–5 實作，含 `scheduleReconnect` 抑制與 `No current window` → `not_connected` 的防禦映射；附帶的舊 label 問題也一併修正）。待使用者以 0.5.1 重跑 M5 第 5 項確認。以下保留原始紀錄。
+**狀態**：已在 0.5.1 修正（依下方「修正方向」1–5 實作，含 `scheduleReconnect` 抑制與 `No current window` → `not_connected` 的防禦映射；附帶的舊 label 問題也一併修正）。**2026-11-01 已以 0.5.1 重跑 M5 第 5 項確認通過**（見上方重測紀錄）。以下保留原始紀錄。
 
 **原狀態**：未修正（2026-11-01 驗收時發現）。優先度 P1——這是 M5「多 profile」主流程最常見的收尾動作，目前會讓工具回一個沒有文件、agent 無法處理的錯誤。
 
