@@ -30,9 +30,11 @@ export type ExtToHost = { type: "hello"; profile_id: string; profile_label: stri
 
 // mcp ⇄ host（socket）
 export type McpToHost = { type: "open"; client_name: string; budget?: Budget }
+  | { type: "ping" }
   | { type: "call"; id: string; tool: ToolName; args: Record<string, unknown> }
   | { type: "cancel"; id: string };
 
 export type HostToMcp = { type: "opened"; session_id: string; profile_id: string; profile_label: string }
   | ({ type: "result" } & Omit<ToolResult, "session_id">)
-  | { type: "pending"; id: string; extend_ms: number };
+  | { type: "pending"; id: string; extend_ms: number }
+  | { type: "pong"; profile_id: string; profile_label: string; extension_version: string; webop_version: string; sessions: number };

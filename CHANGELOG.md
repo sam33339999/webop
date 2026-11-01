@@ -8,6 +8,14 @@
 
 版本規則：里程碑升 minor（M5 → 0.5.0）；里程碑內的修正與小功能升 patch（0.5.1、0.5.2…）。
 
+## 0.6.0 — 2026-11-01（M6）
+
+- 單一執行檔：`pnpm build:sea` 產生 `apps/webop/dist/webop`（Node SEA，macOS ad-hoc 簽署）。從它執行 `webop install`，包裝腳本只執行它自己，不再綁定某個 node 路徑。
+- `webop doctor`：檢查 host manifest、包裝腳本與它要執行的檔案、在線 profile、webop 與擴充版本是否一致；有 `FAIL` 時 exit code 為 1。
+- host 新增 `ping`（doctor 用），查詢時不會開 session。
+- grok CLI 接法：`docs/agents/grok.md`；`webop install` 會印出 `grok mcp add` 指令。共用的系統提示範本移到 `docs/agents/README.md`。
+- 兩個 agent 同時操作的 e2e：各自的分頁群組、互不能動對方分頁、「本次允許」各自獨立、停止只影響自己。
+
 ## 0.5.1 — 2026-11-01
 
 - 修正：某個 profile 的所有一般視窗關掉後（瀏覽器仍在執行），該 profile 仍被當成在線，呼叫回 `internal: No current window`。現在擴充功能會在最後一個一般視窗關閉時斷線、不再自動重連，等該 profile 開出視窗才重新上線；agent 得到的是 `not_connected`。詢問視窗不算一般視窗。

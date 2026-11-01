@@ -1,6 +1,6 @@
 # webop
 
-與 agent 無關的瀏覽器執行器：一個 MV3 Chrome 擴充功能加上 `webop` CLI，透過 stdio MCP 對外提供十一個 `browser_*` 工具（分頁、導航、讀取、截圖與 zoom、輸入、填表、JavaScript、profile 選擇），讓 opencode 等 agent 操作你日常 Chrome 中已授權的網站。
+與 agent 無關的瀏覽器執行器：一個 MV3 Chrome 擴充功能加上 `webop` CLI，透過 stdio MCP（opencode、grok 等任何支援的 agent，可同時多個）對外提供十一個 `browser_*` 工具（分頁、導航、讀取、截圖與 zoom、輸入、填表、JavaScript、profile 選擇），讓 opencode 等 agent 操作你日常 Chrome 中已授權的網站。
 
 ## 架構
 
@@ -10,11 +10,17 @@ agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop nativ
 
 - 設計規格：[docs/superpowers/specs/2026-10-31-webop-design.md](docs/superpowers/specs/2026-10-31-webop-design.md)
 - 實作計畫：[M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md)、[M4](docs/superpowers/plans/2026-10-31-webop-m4.md)、[M5](docs/superpowers/plans/2026-10-31-webop-m5.md)
-- opencode 接法：[docs/agents/opencode.md](docs/agents/opencode.md)
+- 接上 agent：[docs/agents/README.md](docs/agents/README.md)（[opencode](docs/agents/opencode.md)、[grok](docs/agents/grok.md)）
+- 手動驗收清單：[docs/acceptance/](docs/acceptance/)
 
 ## 安裝順序
 
-先執行 `node apps/webop/dist/webop.mjs install` 註冊 Native Messaging host（會印出可直接貼進 opencode 的設定，已含 node 與 `webop.mjs` 的絕對路徑），再在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。要移除 host：`node apps/webop/dist/webop.mjs uninstall [--browser-dir <dir>]`。
+1. `pnpm install && pnpm -r build && pnpm build:sea`，產生單一執行檔 `apps/webop/dist/webop`。
+2. `apps/webop/dist/webop install` 註冊 Native Messaging host（會印出可直接貼進 opencode 的設定與 grok 的 `grok mcp add` 指令）。
+3. 在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。
+4. 有問題先跑 `apps/webop/dist/webop doctor`。
+
+要移除 host：`apps/webop/dist/webop uninstall [--browser-dir <dir>]`。
 
 ## 授權與停止
 

@@ -9,6 +9,7 @@ import { runHost } from "../src/host.ts";
 import { encodeFrame, FrameDecoder } from "../src/framing.ts";
 import { readLines, writeLine } from "../src/ndjson.ts";
 import { descriptorPath, runDir, socketPath } from "../src/paths.ts";
+import { VERSION } from "../src/version.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (f: () => boolean, ms = 3000) => {
@@ -328,5 +329,39 @@ test("t_open_budget_forwarded: a valid budget reaches session_open; an invalid o
   await until(() => t.fromHost.filter((m) => m.type === "session_open").length === 2);
   assert.equal(t.fromHost.filter((m) => m.type === "session_open")[1].budget, undefined);
   a.c.destroy(); b.c.destroy();
+  t.input.end(); await t.done;
+});
+
+test("t_ping_pong: ping answers profile, versions and session count, then closes", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  let closed = false;
+  a.c.on("close", () => { closed = true; });
+  writeLine(a.c, { type: "ping" });
+  await until(() => a.msgs.some((m) => m.type === "pong"));
+  assert.deepEqual(a.msgs.find((m) => m.type === "pong"), {
+    type: "pong", profile_id: "p1", profile_label: "Work", extension_version: "0.0.1", webop_version: VERSION, sessions: 0,
+  });
+  await until(() => closed);
+  t.input.end(); await t.done;
+});
+
+test("t_ping_opens_no_session: a ping next to a live session opens and closes nothing", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "x" });
+  await until(() => a.msgs.some((m) => m.type === "opened"));
+  const b = await t.connect();
+  writeLine(b.c, { type: "ping" });
+  await until(() => b.msgs.some((m) => m.type === "pong"));
+  assert.equal(b.msgs.find((m) => m.type === "pong").sessions, 1);
+  await sleep(50);
+  assert.equal(t.fromHost.filter((m) => m.type === "session_open").length, 1);
+  assert.equal(t.fromHost.filter((m) => m.type === "session_close").length, 0);
+  a.c.destroy();
   t.input.end(); await t.done;
 });

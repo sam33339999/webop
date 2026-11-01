@@ -1,6 +1,6 @@
 {
   "name": "@webop/cli",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -9,7 +9,8 @@
     "zod": "^4.6.7"
   },
   "scripts": {
-    "build": "node build.ts"
+    "build": "node build.ts",
+    "build:sea": "node build.ts && node build-sea.ts"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

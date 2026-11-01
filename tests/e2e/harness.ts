@@ -11,6 +11,8 @@ import { startServer } from "./fixtures/server.ts";
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const dist = join(repo, "apps/extension/dist-dev");
 export const webopBin = join(repo, "apps/webop/dist/webop.mjs");
+/** The single executable (pnpm build:sea). */
+export const seaBin = join(repo, "apps/webop/dist/webop");
 
 export interface Launched {
   context: BrowserContext;
@@ -27,7 +29,7 @@ export interface Launched {
 }
 
 /** Always a throwaway profile under the OS temp dir; never the user's own profile. */
-export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: number; userDataDir?: string; root?: string } = {}): Promise<Launched> {
+export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: number; userDataDir?: string; root?: string; webopCommand?: string[] } = {}): Promise<Launched> {
   const userDataDir = opts.userDataDir ?? await mkdtemp(join(tmpdir(), "webop-e2e-"));
   // Short path on purpose: unix socket paths are capped near 104 bytes on macOS and os.tmpdir() there is long.
   const root = opts.root ?? await mkdtemp("/tmp/wr-");
@@ -38,7 +40,7 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
       browserDir: userDataDir,
       root,
       extensionId: await extensionIdFromKey(manifest.key),
-      webopCommand: [process.execPath, webopBin],
+      webopCommand: opts.webopCommand ?? [process.execPath, webopBin],
     });
   };
   if (opts.nativeHost) await installHost();

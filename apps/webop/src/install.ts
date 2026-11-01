@@ -3,15 +3,26 @@ import os from "node:os";
 import path from "node:path";
 import { rootDir } from "./paths.ts";
 
-const HOST_NAME = "com.webop.native_host";
+export const HOST_NAME = "com.webop.native_host";
 
 function hostDir(browserDir?: string): string {
   const base = browserDir ?? path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome");
   return path.join(base, "NativeMessagingHosts");
 }
-const manifestFile = (browserDir?: string) => path.join(hostDir(browserDir), `${HOST_NAME}.json`);
-const wrapperFile = (root?: string) => path.join(rootDir(root), "bin", "webop-native-host");
+export const manifestFile = (browserDir?: string) => path.join(hostDir(browserDir), `${HOST_NAME}.json`);
+export const wrapperFile = (root?: string) => path.join(rootDir(root), "bin", "webop-native-host");
 const shQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The command a wrapper written by `install` runs (`exec '<a>' '<b>' native-host` → ["<a>", "<b>"]); undefined when the
+ * wrapper has no exec line in that format. The inverse of the quoting `install` uses.
+ */
+export function parseWrapperExec(wrapper: string): string[] | undefined {
+  const line = wrapper.split("\n").find((l) => l.startsWith("exec "));
+  const m = line && /^exec((?:\s+'(?:[^']|'\\'')*')+)\s+native-host\s*$/.exec(line);
+  if (!m) return undefined;
+  return [...m[1]!.matchAll(/'((?:[^']|'\\'')*)'/g)].map((x) => x[1]!.replaceAll("'\\''", "'"));
+}
 
 export function install(o: { browserDir?: string; webopCommand: string[]; extensionId: string; root?: string }): { manifestPath: string; wrapperPath: string } {
   const wrapperPath = wrapperFile(o.root);

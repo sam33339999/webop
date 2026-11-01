@@ -25,3 +25,16 @@ test("webop --version prints the version", () => {
   assert.equal(r.status, 0);
   assert.equal(r.stdout.trim(), `webop ${VERSION}`);
 });
+
+test("t_sea_binary_version: the single executable prints the version", (t) => {
+  const sea = fileURLToPath(new URL("../dist/webop", import.meta.url));
+  try {
+    readFileSync(sea);
+  } catch {
+    t.skip("run `pnpm --filter @webop/cli build:sea` first");
+    return;
+  }
+  const r = spawnSync(sea, ["--version"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), `webop ${VERSION}`);
+});
