@@ -13,6 +13,9 @@ import { descriptorPath, runDir, socketPath } from "../src/paths.ts";
 import { VERSION } from "../src/version.ts";
 
 const EXT = "abcdefghijklmnopabcdefghijklmnop";
+/** A script path that exists, standing in for dist/webop.mjs. */
+const SCRIPT = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wds-")), "webop.mjs");
+fs.writeFileSync(SCRIPT, "");
 const tmp = (p: string) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 
 function env() {
@@ -44,7 +47,7 @@ const find = (cs: Check[], re: RegExp) => cs.find((c) => re.test(c.title) || re.
 
 test("t_doctor_all_ok: installed host and an online profile give no warn or FAIL", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   const h = await pongHost(root, "p1", "Work");
   const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
   assert.deepEqual(levels(cs).filter((l) => l !== "ok"), [], formatChecks(cs));
@@ -60,7 +63,7 @@ test("t_doctor_no_manifest: no host manifest in the first browser dir is a FAIL"
 
 test("t_doctor_second_dir_missing_is_ok: a second browser dir without a manifest is fine (Brave reads Chrome's)", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   const other = tmp("wdb2-");
   const cs = await doctor({ root, browserDirs: [browserDir, other], extensionId: EXT });
   const manifests = cs.filter((c) => /host manifest/.test(c.title));
@@ -70,7 +73,7 @@ test("t_doctor_second_dir_missing_is_ok: a second browser dir without a manifest
 
 test("t_doctor_wrong_origin: a manifest for another extension id is a FAIL", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", webopCommand: [process.execPath, SCRIPT] });
   const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
   assert.equal(find(cs, /host manifest/)?.level, "FAIL", formatChecks(cs));
 });
@@ -81,13 +84,13 @@ test("t_doctor_wrapper_target_missing: a wrapper that execs a missing file is a 
   const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
   const w = find(cs, /^wrapper/);
   assert.equal(w?.level, "FAIL", formatChecks(cs));
-  assert.match(w!.detail ?? "", /\/nonexistent\/webop/);
+  assert.match(w!.detail ?? "", /\/nonexistent\/webop does not exist/);
   assert.match(w!.detail ?? "", /webop install/);
 });
 
 test("t_doctor_version_mismatch: extension and webop versions differ → warn with both", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   const h = await pongHost(root, "p1", "Work", "0.0.9");
   const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
   const v = cs.find((c) => c.level === "warn" && /0\.0\.9/.test(c.detail ?? ""));
@@ -98,7 +101,7 @@ test("t_doctor_version_mismatch: extension and webop versions differ → warn wi
 
 test("t_doctor_dead_socket: a live descriptor whose socket accepts nothing is a FAIL, quickly", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   descriptor(root, "p1", "Work");
   fs.writeFileSync(socketPath("p1", root), "not a socket");
   const started = Date.now();
@@ -111,7 +114,7 @@ test("t_doctor_dead_socket: a live descriptor whose socket accepts nothing is a 
 
 test("t_doctor_silent_socket: a socket that never answers is a FAIL after the timeout", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   descriptor(root, "p1", "Work");
   const srv = net.createServer(() => {});
   await new Promise<void>((r) => srv.listen(socketPath("p1", root), r));
@@ -124,7 +127,7 @@ test("t_doctor_silent_socket: a socket that never answers is a FAIL after the ti
 
 test("t_doctor_old_host: a host that closes on ping (pre-0.6.0) is reported as probably old", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   descriptor(root, "p1", "Work");
   const srv = net.createServer((s) => readLines(s, () => s.destroy()));
   await new Promise<void>((r) => srv.listen(socketPath("p1", root), r));
@@ -137,7 +140,7 @@ test("t_doctor_old_host: a host that closes on ping (pre-0.6.0) is reported as p
 
 test("t_doctor_stale_descriptor: a dead pid's descriptor is a warn naming the file; no profile online warns", async () => {
   const { root, browserDir } = env();
-  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/x/webop.mjs"] });
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, SCRIPT] });
   const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
   descriptor(root, "gone", "Old", dead);
   const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
@@ -152,4 +155,25 @@ test("t_doctor_exit_code: `webop doctor` exits 1 on FAIL and prints the version 
   assert.equal(r.status, 1, r.stdout + r.stderr);
   assert.equal(r.stdout.split("\n")[0], `webop ${VERSION}`);
   assert.match(r.stdout, /^FAIL /m);
+});
+
+test("t_doctor_wrapper_script_missing: a script build whose webop.mjs is gone is a FAIL naming it", async () => {
+  const { root, browserDir } = env();
+  install({ browserDir, root, extensionId: EXT, webopCommand: [process.execPath, "/nonexistent/dist/webop.mjs"] });
+  const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
+  const w = find(cs, /^wrapper/);
+  assert.equal(w?.level, "FAIL", formatChecks(cs));
+  assert.match(w!.detail ?? "", /\/nonexistent\/dist\/webop\.mjs does not exist/);
+});
+
+test("t_doctor_wrapper_target_not_executable: an executable without +x is a FAIL", async () => {
+  const { root, browserDir } = env();
+  const bin = path.join(tmp("wdx-"), "webop");
+  fs.writeFileSync(bin, "");
+  fs.chmodSync(bin, 0o644);
+  install({ browserDir, root, extensionId: EXT, webopCommand: [bin] });
+  const cs = await doctor({ root, browserDirs: [browserDir], extensionId: EXT });
+  const w = find(cs, /^wrapper/);
+  assert.equal(w?.level, "FAIL", formatChecks(cs));
+  assert.match(w!.detail ?? "", /not executable/);
 });

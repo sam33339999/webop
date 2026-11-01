@@ -13,6 +13,17 @@ export const manifestFile = (browserDir?: string) => path.join(hostDir(browserDi
 export const wrapperFile = (root?: string) => path.join(rootDir(root), "bin", "webop-native-host");
 const shQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
+/**
+ * The command a wrapper written by `install` runs (`exec '<a>' '<b>' native-host` → ["<a>", "<b>"]); undefined when the
+ * wrapper has no exec line in that format. The inverse of the quoting `install` uses.
+ */
+export function parseWrapperExec(wrapper: string): string[] | undefined {
+  const line = wrapper.split("\n").find((l) => l.startsWith("exec "));
+  const m = line && /^exec((?:\s+'(?:[^']|'\\'')*')+)\s+native-host\s*$/.exec(line);
+  if (!m) return undefined;
+  return [...m[1]!.matchAll(/'((?:[^']|'\\'')*)'/g)].map((x) => x[1]!.replaceAll("'\\''", "'"));
+}
+
 export function install(o: { browserDir?: string; webopCommand: string[]; extensionId: string; root?: string }): { manifestPath: string; wrapperPath: string } {
   const wrapperPath = wrapperFile(o.root);
   const manifestPath = manifestFile(o.browserDir);

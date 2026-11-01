@@ -2,7 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { HOST_NAME, manifestFile, wrapperFile } from "./install.ts";
+import { HOST_NAME, manifestFile, parseWrapperExec, wrapperFile } from "./install.ts";
 import { readLines, writeLine } from "./ndjson.ts";
 import { runDir, socketPath } from "./paths.ts";
 import { VERSION } from "./version.ts";
@@ -51,13 +51,22 @@ function checkWrapper(root?: string): Check {
   } catch {
     return { level: "FAIL", title, detail: "not executable; run `webop install` again" };
   }
-  const execLine = fs.readFileSync(file, "utf8").split("\n").find((l) => l.startsWith("exec "));
-  const target = execLine ? /^exec\s+'((?:[^']|'\\'')*)'/.exec(execLine)?.[1]?.replaceAll("'\\''", "'") : undefined;
-  if (!execLine || !target) return { level: "FAIL", title, detail: "has no exec line; run `webop install` again" };
-  if (!fs.existsSync(target)) {
-    return { level: "FAIL", title, detail: `runs \`${execLine.slice(5)}\`, but ${target} does not exist; re-run \`webop install\` from the current build` };
+  const command = parseWrapperExec(fs.readFileSync(file, "utf8"));
+  if (!command || command.length === 0) return { level: "FAIL", title, detail: "exec line is not in the format `webop install` writes; run `webop install` again" };
+  const runs = command.join(" ");
+  // Every path the wrapper passes must exist (the SEA, or node plus dist/webop.mjs); the program itself must be executable.
+  for (const [i, arg] of command.entries()) {
+    if (!arg.startsWith("/")) continue;
+    if (!fs.existsSync(arg)) return { level: "FAIL", title, detail: `runs ${runs}, but ${arg} does not exist; re-run \`webop install\` from the current build` };
+    if (i === 0) {
+      try {
+        fs.accessSync(arg, fs.constants.X_OK);
+      } catch {
+        return { level: "FAIL", title, detail: `runs ${runs}, but ${arg} is not executable; rebuild it or re-run \`webop install\`` };
+      }
+    }
   }
-  return { level: "ok", title, detail: `runs ${execLine.slice(5)}` };
+  return { level: "ok", title, detail: `runs ${runs}` };
 }
 
 function pidAlive(pid: unknown): boolean {

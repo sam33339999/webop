@@ -70,3 +70,15 @@ test("install prints pasteable opencode config with absolute node and script pat
   assert.ok(path.isAbsolute(cmd[1]));
   assert.equal(cmd[2], "mcp");
 });
+
+test("parseWrapperExec reads back exactly what install wrote, quotes included", async () => {
+  const { install: inst, parseWrapperExec } = await import("../src/install.ts");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const root = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "wpw-"));
+  const cmd = ["/opt/it's here/node", "/a b/webop.mjs"];
+  const out = inst({ browserDir: root, root, extensionId: "x".repeat(32), webopCommand: cmd });
+  assert.deepEqual(parseWrapperExec(fsm.readFileSync(out.wrapperPath, "utf8")), cmd);
+  assert.equal(parseWrapperExec("#!/bin/sh\nexec /usr/bin/webop native-host\n"), undefined);
+});
