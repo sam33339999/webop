@@ -6,12 +6,18 @@ import { install, uninstall } from "./install.ts";
 import { runMcp } from "./mcp.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
-const usage = "usage: webop native-host | webop mcp | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
+const usage = "usage: webop native-host | webop mcp [--profile <profile_id|label>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
 if (cmd === "native-host") {
   await runHost({ input: process.stdin, output: process.stdout });
   process.exit(0);
 } else if (cmd === "mcp") {
-  await runMcp();
+  const i = rest.indexOf("--profile");
+  const profile = i >= 0 ? rest[i + 1] : undefined;
+  if (i >= 0 && !profile) {
+    process.stderr.write("usage: webop mcp [--profile <profile_id|label>]\n");
+    process.exit(2);
+  }
+  await runMcp(profile);
   process.exit(0);
 } else if (cmd === "install") {
   const i = rest.indexOf("--browser-dir");

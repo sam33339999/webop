@@ -16,6 +16,7 @@ const fail = (code: ErrorCode, message: string): Outcome => ({ error: { code, me
 
 interface Conn {
   sock: net.Socket;
+  profile_id: string;
   pending: Map<string, (o: Outcome) => void>;
   /** Restarts a pending call's timer with a longer allowance (the extension is waiting on the user). */
   extend: Map<string, (ms: number) => void>;
@@ -61,13 +62,38 @@ function liveProfiles(root?: string): { profile_id: string; profile_label: strin
   return out;
 }
 
-export function createMcpServer(opts: { root?: string; callTimeoutMs?: number }): McpServer {
+export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; profile?: string }): McpServer {
   const root = opts.root;
   const callTimeoutMs = opts.callTimeoutMs ?? 60_000;
+  const pinned = opts.profile;
   const server = new McpServer({ name: "webop", version: "0.0.0" });
   let conn: Conn | null = null;
   let connecting: Promise<Conn | Outcome> | null = null;
   let nextId = 1;
+  /** Which online profile may be used. `none` means "whatever single profile is online". */
+  let binding: { kind: "none" } | { kind: "explicit"; profile_id: string; profile_label: string } = { kind: "none" };
+  let profileCache: { at: number; list: { profile_id: string; profile_label: string }[] } | null = null;
+
+  /** Re-reads the run directory at most every 500 ms: a new profile should be noticed quickly, a vanished one soon after. */
+  function onlineProfiles(): { profile_id: string; profile_label: string }[] {
+    const now = Date.now();
+    if (!profileCache || now - profileCache.at > 500) {
+      const list = liveProfiles(root);
+      // An empty result is not cached: the first profile usually shows up right after the browser starts.
+      profileCache = list.length > 0 ? { at: now, list } : null;
+      return list;
+    }
+    return profileCache.list;
+  }
+
+  const describe = (list: { profile_id: string; profile_label: string }[]): string =>
+    list.map((p) => `${p.profile_label} (${p.profile_id})`).join(", ");
+
+  /** Exact id first, then a case-insensitive exact label. */
+  const matchProfiles = (wanted: string, profiles: { profile_id: string; profile_label: string }[]) => {
+    const byId = profiles.filter((p) => p.profile_id === wanted);
+    return byId.length > 0 ? byId : profiles.filter((p) => p.profile_label.toLowerCase() === wanted.toLowerCase());
+  };
 
   function dropConn(c: Conn): void {
     if (conn === c) conn = null;
@@ -77,19 +103,17 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
     for (const f of pend) f(fail("not_connected", "Connection to webop host was lost"));
   }
 
-  async function establish(): Promise<Conn | Outcome> {
-    const profiles = liveProfiles(root);
-    if (profiles.length === 0) {
-      return fail("not_connected", "No webop browser profile is online. Open the browser with the webop extension enabled.");
-    }
-    if (profiles.length > 1) {
-      return fail(
-        "profile_required",
-        `Multiple browser profiles are online: ${profiles.map((p) => p.profile_label).join(", ")}. Only one can be used at a time.`,
-      );
-    }
-    const sock = net.createConnection(socketPath(profiles[0]!.profile_id, root));
-    const c: Conn = { sock, pending: new Map(), extend: new Map() };
+  /** Drops the host connection (the host then closes its session; its tabs stay open). */
+  function closeConn(): void {
+    const c = conn;
+    if (!c) return;
+    dropConn(c);
+    c.sock.destroy();
+  }
+
+  async function establish(profile: { profile_id: string; profile_label: string }): Promise<Conn | Outcome> {
+    const sock = net.createConnection(socketPath(profile.profile_id, root));
+    const c: Conn = { sock, profile_id: profile.profile_id, pending: new Map(), extend: new Map() };
     return new Promise<Conn | Outcome>((resolve) => {
       let opened = false;
       const unavailable = (m: string) => resolve(fail("not_connected", m));
@@ -158,11 +182,67 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
   }
 
   async function getConn(): Promise<Conn | Outcome> {
-    if (conn) return conn;
-    connecting ??= establish().finally(() => {
-      connecting = null;
-    });
+    const profiles = onlineProfiles();
+    if (binding.kind === "none" && pinned !== undefined) {
+      // `--profile` pins on first use; it is re-tried every call so start-up order does not matter.
+      const matches = matchProfiles(pinned, profiles);
+      if (matches.length === 0) {
+        return fail("not_connected", `Profile "${pinned}" is not online. Online: ${describe(profiles) || "none"}.`);
+      }
+      if (matches.length > 1) return fail("profile_required", `"${pinned}" matches several profiles: ${describe(matches)}. Use a profile_id.`);
+      binding = { kind: "explicit", profile_id: matches[0]!.profile_id, profile_label: matches[0]!.profile_label };
+    }
+    if (binding.kind === "explicit") {
+      const target = profiles.find((p) => p.profile_id === (binding as { profile_id: string }).profile_id);
+      if (!target) {
+        closeConn();
+        return fail("not_connected", `Profile "${(binding as { profile_label: string }).profile_label}" is not online. Online: ${describe(profiles) || "none"}.`);
+      }
+      if (conn && conn.profile_id === target.profile_id) return conn;
+      closeConn();
+      if (!connecting) connecting = establish(target).finally(() => { connecting = null; });
+      return connecting;
+    }
+    if (profiles.length === 0) {
+      closeConn();
+      return fail("not_connected", "No webop browser profile is online. Open the browser with the webop extension enabled.");
+    }
+    if (profiles.length > 1) {
+      // Keep the current connection but serve nothing: the caller must say which profile it means.
+      return fail(
+        "profile_required",
+        `Multiple browser profiles are online: ${describe(profiles)}. Call browser_profile_select to pick one for this session.`,
+      );
+    }
+    const only = profiles[0]!;
+    if (conn && conn.profile_id === only.profile_id) return conn;
+    closeConn();
+    if (!connecting) connecting = establish(only).finally(() => { connecting = null; });
     return connecting;
+  }
+
+  async function selectProfile(profile: string): Promise<Outcome> {
+    const wanted = profile.trim();
+    if (wanted === "") return fail("invalid_args", "profile must be a non-empty profile_id or profile label.");
+    const profiles = onlineProfiles();
+    const matches = matchProfiles(wanted, profiles);
+    if (matches.length === 0) return fail("not_connected", `No online profile matches "${wanted}". Online: ${describe(profiles) || "none"}.`);
+    if (matches.length > 1) return fail("profile_required", `"${wanted}" matches several profiles: ${describe(matches)}. Pass a profile_id instead.`);
+    const chosen = matches[0]!;
+    binding = { kind: "explicit", profile_id: chosen.profile_id, profile_label: chosen.profile_label };
+    if (conn && conn.profile_id !== chosen.profile_id) closeConn();
+    return { content: [{ type: "text", text: `Selected ${chosen.profile_label} (${chosen.profile_id}).` }] };
+  }
+
+  function listProfiles(): Outcome {
+    const profiles = onlineProfiles();
+    const selectedId = binding.kind === "explicit" ? binding.profile_id : conn?.profile_id;
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify(profiles.map((p) => ({ ...p, selected: p.profile_id === selectedId }))),
+      }],
+    };
   }
 
   async function forward(tool: ToolName, args: Record<string, unknown>, signal?: AbortSignal): Promise<Outcome> {
@@ -203,7 +283,15 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
 
   for (const def of TOOL_DEFS) {
     server.registerTool(def.name, { description: def.description, inputSchema: def.shape }, async (args, extra) => {
-      const o = await forward(def.tool, args as Record<string, unknown>, extra.signal);
+      let o: Outcome;
+      if (def.tool === "profiles_list") {
+        o = listProfiles();
+      } else if (def.tool === "profile_select") {
+        const profile = (args as { profile?: unknown }).profile;
+        o = typeof profile === "string" ? await selectProfile(profile) : fail("invalid_args", "profile must be a string.");
+      } else {
+        o = await forward(def.tool, args as Record<string, unknown>, extra.signal);
+      }
       if ("error" in o) {
         return { isError: true, content: [{ type: "text", text: `${o.error.code}: ${o.error.message}` }] };
       }
@@ -213,8 +301,8 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
   return server;
 }
 
-export async function runMcp(): Promise<void> {
-  const server = createMcpServer({});
+export async function runMcp(profile?: string): Promise<void> {
+  const server = createMcpServer({ profile });
   const log = logLine;
   process.on("uncaughtException", (e) => log(`uncaughtException ${e.stack ?? e}`));
   process.on("unhandledRejection", (e) => log(`unhandledRejection ${e}`));

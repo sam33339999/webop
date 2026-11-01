@@ -19,7 +19,7 @@ function errOf(r: R) {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Opens the blocking fixture, takes a screenshot context and returns the screenshot-frame centers of #btn (blocks) and #inc (counts). */
-async function setup(ms: number, timeouts: { cdpSendMs: number; callDeadlineMs: number; probeMs?: number }) {
+async function setup(ms: number, timeouts: { cdpSendMs: number; inputSendMs?: number; callDeadlineMs: number; probeMs?: number }) {
   const h = await open();
   const tab_id = await openTab(h.sw, `${h.baseUrl}/blocking.html?ms=${ms}`);
   const page = h.context.pages().find((p) => p.url().includes("/blocking.html")) as Page;
@@ -42,7 +42,7 @@ async function setup(ms: number, timeouts: { cdpSendMs: number; callDeadlineMs: 
 const ACTION_PREFIX = /^The action may have been partially or fully performed: /;
 
 test("t_send_timeout: a click that blocks the page returns timeout, not a 60 s hang", async () => {
-  const { h, tab_id, coordinate } = await setup(6000, { cdpSendMs: 1000, callDeadlineMs: 50_000 });
+  const { h, tab_id, coordinate } = await setup(6000, { cdpSendMs: 1000, inputSendMs: 1000, callDeadlineMs: 50_000 });
   const t0 = Date.now();
   const e = errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate }));
   const took = Date.now() - t0;
@@ -125,7 +125,7 @@ test("t_cancelled_tabs_create_creates_no_tab", async () => {
   assert.equal(await h.sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length)), before);
 });
 
-test("t_real_alert: a real alert() blocks the page; the next action is refused and nothing lands after dismissal", async () => {
+test("t_real_alert: a real alert() is reported as performed at once; the next action is refused and nothing lands later", async () => {
   const h = await open();
   const tab_id = await openTab(h.sw, `${h.baseUrl}/alert.html`);
   const page = h.context.pages().find((p) => p.url().includes("/alert.html")) as Page;
@@ -144,14 +144,24 @@ test("t_real_alert: a real alert() blocks the page; the next action is refused a
   };
   const alertAt = await centerOf("#alert");
   const incAt = await centerOf("#inc");
-  await h.sw.evaluate((t) => (globalThis as any).__webop.setTimeouts(t), { cdpSendMs: 1000, callDeadlineMs: 50_000, probeMs: 500 });
+  // Production-like dispatch timeout: without dialog detection the click would burn all of it.
+  await h.sw.evaluate((t) => (globalThis as any).__webop.setTimeouts(t), { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 500 });
 
-  assert.equal(errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: alertAt })).code, "timeout");
+  const started = Date.now();
+  const first = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: alertAt });
+  const elapsed = Date.now() - started;
+  const firstText = "error" in first ? first.error.message : String(first.content.map((b) => (b.type === "text" ? b.text : "")).join(" "));
+  // Either "performed, the dialog blocks the page" or "may have been performed": never a bare, unspecific 20 s hang.
+  assert.match(firstText, /performed/i);
   assert.equal(dialogs.length, 1, "the alert dialog is really open");
+  assert.ok(elapsed < 6000, `the blocking click returns quickly (took ${elapsed} ms)`);
+
+  const secondStarted = Date.now();
   const second = errOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: incAt }));
   assert.equal(second.code, "timeout");
   assert.match(second.message, /^Not performed/);
   assert.equal(dialogs.length, 1, "no second dialog appeared");
+  assert.ok(Date.now() - secondStarted < 3000, "the refused click does not wait for a probe");
 
   await dialogs[0].dismiss();
   // Poll: a late-landing click would show up as "count 1" shortly after the page unblocks.

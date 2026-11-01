@@ -1,7 +1,7 @@
 import type { ContentBlock } from "@webop/core/protocol";
 import type { ScreenshotContext } from "@webop/core/coords";
 import { planCapture } from "@webop/core/budget";
-import { attach, send, takeFreshAttach } from "./cdp.ts";
+import { CdpError, attach, isDialogOpen, send, takeFreshAttach } from "./cdp.ts";
 
 const JPEG_QUALITY = 75;
 const OVERLAY_SETTLE_MS = 50;
@@ -78,6 +78,18 @@ async function waitForStableViewport(tabId: number): Promise<void> {
 /** `store: false` takes a picture for the user's eyes (permission prompt) without replacing the context the agent's coordinates are mapped with. */
 export async function screenshot(tabId: number, opts: { store?: boolean } = {}): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   await attach(tabId);
+  // A dialog freezes the page's script thread, so every probe/settle step here would stall; capture the viewport as-is.
+  if (isDialogOpen(tabId)) return dialogScreenshot(tabId);
+  try {
+    return await fullScreenshot(tabId, opts);
+  } catch (e) {
+    // The dialog may have opened while we were already busy (the probe hangs); everything it needs is browser-side.
+    if (!(e instanceof CdpError) || e.code !== "timeout") throw e;
+    return dialogScreenshot(tabId);
+  }
+}
+
+async function fullScreenshot(tabId: number, opts: { store?: boolean }): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
   if (__DEV__) hiderLog.push({ tabId, hidden: true });
@@ -115,4 +127,27 @@ export async function screenshot(tabId: number, opts: { store?: boolean } = {}):
     if (__DEV__) hiderLog.push({ tabId, hidden: false });
     await hideOverlay(tabId, false);
   }
+}
+
+/**
+ * The page is blocked by a dialog, and so is `Page.captureScreenshot` (it waits for the page). The extension API
+ * captures the visible tab without the debugger instead; the previous coordinate frame is kept, since the still-open
+ * dialog means the page cannot have moved.
+ */
+async function dialogScreenshot(tabId: number): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
+  const ctx = getContext(tabId) ?? { viewportWidth: 0, viewportHeight: 0, screenshotWidth: 0, screenshotHeight: 0 };
+  takeFreshAttach(tabId);
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  // The content script cannot run while the dialog blocks the page, so the hider is not awaited (nothing else needs it).
+  void hideOverlay(tabId, true).catch(() => {});
+  if (tab) {
+    try {
+      const url = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: JPEG_QUALITY });
+      const data = url.slice(url.indexOf(",") + 1);
+      return { block: { type: "image", data, mimeType: "image/jpeg" }, ctx };
+    } catch {
+      // e.g. the window is minimised: report the action without a picture.
+    }
+  }
+  return { block: { type: "text", text: "No screenshot available while a dialog is open." }, ctx };
 }

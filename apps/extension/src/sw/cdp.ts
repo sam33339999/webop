@@ -24,9 +24,14 @@ const CANCEL_GRACE_MS = 100;
 const halted = new Set<number>();
 /** Tabs whose debugger bar the user cancelled while no command was waiting; the next call on them says so once. */
 const detachNotices = new Map<number, number>();
+/** Tabs with an open JavaScript dialog (alert/confirm/prompt/beforeunload): commands that run page script stall until it is closed. */
+const dialogsOpen = new Set<number>();
+const dialogWaiters = new Map<number, Set<() => void>>();
+/** Dev-only trace of raw CDP events (proves whether the debugger delivers them at all). */
+export const devEvents: string[] = [];
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
-export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
+export const timeouts = { cdpSendMs: 20_000, inputSendMs: 3_000, callDeadlineMs: 50_000, probeMs: 2_000 };
 const inputCounts = new Map<number, number>();
 /** Dev-only fault injection (see the `__webop` hook): makes the next `Page.captureScreenshot` fail once. */
 export const devFaults: { failNextCapture: boolean; beforeFail?: () => Promise<void> } = { failNextCapture: false };
@@ -54,7 +59,51 @@ function sessionClosed(): CdpError {
 }
 
 // inputCounts is deliberately kept: a tab closing after its first input must still read as "input went out".
-chrome.tabs.onRemoved.addListener((tabId) => { halted.delete(tabId); detachNotices.delete(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { halted.delete(tabId); detachNotices.delete(tabId); dialogsOpen.delete(tabId); });
+
+/** True while the page is showing a JavaScript dialog; page-script commands (Runtime.evaluate, probes) hang until then. */
+export function isDialogOpen(tabId: number): boolean {
+  return dialogsOpen.has(tabId);
+}
+
+export function dialogError(): CdpError {
+  return new CdpError("timeout", "Not performed: a JavaScript dialog is open in the page; dismiss it and retry.");
+}
+
+/** Wakes when a dialog opens on the tab (the caller stops waiting for a command the dialog now holds up). */
+function dialogOpened(tabId: number): { promise: Promise<void>; stop: () => void } {
+  let waiters = dialogWaiters.get(tabId);
+  if (!waiters) dialogWaiters.set(tabId, (waiters = new Set()));
+  const set = waiters;
+  let wake!: () => void;
+  const promise = new Promise<void>((resolve) => { wake = resolve; });
+  set.add(wake);
+  return {
+    promise,
+    stop: () => {
+      set.delete(wake);
+      if (set.size === 0) dialogWaiters.delete(tabId);
+    },
+  };
+}
+
+/**
+ * A dialog holds the page's script thread: a command that runs page script would stall its whole timeout (the caller
+ * has long since given up), so it is refused at once instead. The exception is the input that opens the dialog — that
+ * one is cut short too, but by `send` returning success on `Page.javascriptDialogOpening`.
+ */
+async function dialogGate(tabId: number, method: string): Promise<void> {
+  if (dialogsOpen.has(tabId) && !DIALOG_SAFE.has(method)) throw dialogError();
+}
+chrome.debugger.onEvent.addListener((source, method) => {
+  const tabId = source.tabId;
+  if (__DEV__ && devEvents.length < 500) devEvents.push(method);
+  if (tabId === undefined) return;
+  if (method === "Page.javascriptDialogOpening") {
+    dialogsOpen.add(tabId);
+    for (const wake of [...(dialogWaiters.get(tabId) ?? [])]) wake();
+  } else if (method === "Page.javascriptDialogClosed") dialogsOpen.delete(tabId);
+});
 
 export function stoppedError(): CdpError {
   return new CdpError("stopped_by_user", "Not performed: the user pressed stop.");
@@ -87,9 +136,9 @@ export function onDetached(cb: (tabId: number, reason: string) => void): void {
 export function handleDetach(tabId: number, reason: string): void {
   attached.delete(tabId);
   unsettled.delete(tabId);
+  dialogsOpen.delete(tabId);
   lastDetach.set(tabId, { reason, at: Date.now() });
-  for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();
-  const waiting = pending.get(tabId);
+  for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();  const waiting = pending.get(tabId);
   if (reason === "canceled_by_user" && !(waiting && waiting.size > 0)) detachNotices.set(tabId, Date.now());
   if (waiting && reason === "canceled_by_user") {
     for (const reject of [...waiting]) {
@@ -140,6 +189,8 @@ async function doAttach(tabId: number): Promise<void> {
   attached.add(tabId);
   unsettled.add(tabId);
   lastDetach.delete(tabId);
+  // Needed for `Page.javascriptDialogOpening`/`Closed`: a blocked page must be recognized, not waited on.
+  await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => {});
 }
 
 /** True once per fresh attach (not for a re-adopted attachment): the caller should let the viewport settle before capturing. */
@@ -180,14 +231,21 @@ function waitForDetach(tabId: number, timeoutMs: number): Promise<void> {
   });
 }
 
+/** Commands that still work while a dialog holds the page's script thread. */
+const DIALOG_SAFE: ReadonlySet<string> = new Set([
+  "Page.captureScreenshot", "Page.enable", "Page.handleJavaScriptDialog", "Emulation.setFocusEmulationEnabled",
+]);
+
 export async function send<T = unknown>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
   await attach(tabId);
+  await dialogGate(tabId, method);
   let set = pending.get(tabId);
   if (!set) pending.set(tabId, (set = new Set()));
   let abort!: (e: CdpError) => void;
   const aborted = new Promise<never>((_, reject) => { abort = reject; });
   set.add(abort);
-  if (method.startsWith("Input.")) inputCounts.set(tabId, inputsSentTo(tabId) + 1);
+  const isInput = method.startsWith("Input.");
+  if (isInput) inputCounts.set(tabId, inputsSentTo(tabId) + 1);
   if (__DEV__ && method === "Page.captureScreenshot" && devFaults.failNextCapture) {
     devFaults.failNextCapture = false;
     await devFaults.beforeFail?.();
@@ -201,11 +259,18 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<never>((_, reject) => {
-    const ms = timeouts.cdpSendMs;
+    // Input has its own, shorter allowance: a click that opens a dialog only gets its reply once the dialog is
+    // dismissed, and the agent should not sit through the full send timeout for that.
+    const ms = isInput ? timeouts.inputSendMs : timeouts.cdpSendMs;
     timer = setTimeout(() => reject(new CdpError("timeout", `${method} did not complete within ${ms / 1000}s; the page may be blocked by a JavaScript dialog or a long-running script.`)), ms);
   });
+  // An input that itself opens a dialog never gets its reply until the dialog is dismissed; the opening proves it landed.
+  const dialog = isInput ? dialogOpened(tabId) : null;
   try {
-    return await Promise.race([chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>, aborted, timedOut]);
+    const command = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>;
+    const raced: Promise<unknown>[] = [command, aborted, timedOut];
+    if (dialog) raced.push(dialog.promise.then(() => undefined));
+    return (await Promise.race(raced)) as T;
   } catch (e) {
     if (e instanceof CdpError) throw e;
     if (!(await chrome.tabs.get(tabId).then(() => true, () => false))) {
@@ -220,6 +285,7 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
     throw new CdpError("internal", `${method} failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     clearTimeout(timer);
+    dialog?.stop();
     set.delete(abort);
   }
 }

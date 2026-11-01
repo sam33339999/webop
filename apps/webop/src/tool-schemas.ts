@@ -73,4 +73,18 @@ export const TOOL_DEFS: ToolDef[] = [
       scroll_amount: z.number().optional(),
     },
   },
+  {
+    tool: "profiles_list",
+    name: "browser_profiles_list",
+    description: "List the Chrome profiles that have this extension running (profile_id, label, selected)." + SAFETY,
+    shape: {},
+  },
+  {
+    tool: "profile_select",
+    name: "browser_profile_select",
+    description:
+      "Choose which online Chrome profile this session drives. Pass a profile_id or an exact label. " +
+      "Needed as soon as browser_profiles_list shows more than one profile." + SAFETY,
+    shape: { profile: z.string() },
+  },
 ];

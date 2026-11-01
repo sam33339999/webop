@@ -1,6 +1,6 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, dropDetachNoticeSince, inputsSentTo, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
+import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isDialogOpen, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot, withStopButtonHidden } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -221,6 +221,7 @@ async function assertResponsive(tabId: number): Promise<void> {
     await Promise.race([send(tabId, "Runtime.evaluate", { expression: "1", returnByValue: true }), dead]);
   } catch (e) {
     if (e instanceof CdpError && e.code !== "timeout") throw e;
+    if (isDialogOpen(tabId)) throw dialogError();
     throw new CdpError("timeout", "Not performed: the page is not responding (a JavaScript dialog or long-running script may be blocking it).");
   } finally {
     clearTimeout(timer);
@@ -545,6 +546,9 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           await withStopButtonHidden(tabId, () => perform(action, tabId, call.args, guard));
           await settle(tabId);
         }
+        // The input opened a dialog: the page's script thread is frozen until the user dismisses it. The action did land.
+        const blocked = performed && isDialogOpen(tabId);
+        const dialogNote = " The action WAS performed; a JavaScript dialog is now open and blocks the page, so nothing else will run until it is dismissed.";
         await assertLive(call.session_id);
         await recheck(call.session_id, tabId, performed, ctx);
         if (ctx.stopped()) throw stoppedError();
@@ -557,13 +561,13 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           await assertLive(call.session_id);
           await recheck(call.session_id, tabId, performed, ctx);
           const why = e instanceof Error ? e.message : String(e);
-          return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}` }] };
+          return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}${blocked ? dialogNote : ""}` }] };
         }
         await recheck(call.session_id, tabId, performed, ctx);
         // The user may have pressed stop while we were busy; the result is withheld.
         if (ctx.stopped()) throw stoppedError();
         const { block, ctx: shotCtx } = shot;
-        return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
+        return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.${blocked ? dialogNote : ""}` }, block] };
       } catch (caught) {
         const e = viaStop(caught, ctx);
         // Once input has gone out, a failure no longer means "nothing happened".
