@@ -90,6 +90,8 @@ async function connect(): Promise<void> {
       scheduleReconnect();
     });
     post(p, { type: "hello", profile_id: id, profile_label: label, extension_version: chrome.runtime.getManifest().version });
+    // A rename between reading the label and `port` being set was not sent by onChanged (no port yet); catch it up.
+    void profileLabel(id).then((now) => { if (now !== label && port === p) post(p, { type: "profile_label", profile_label: now }); });
     connectedAt = Date.now();
   } catch {
     port = undefined;
