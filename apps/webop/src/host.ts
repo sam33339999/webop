@@ -108,6 +108,15 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
       if (!isObj(raw)) return log("dropped non-object client message");
       const m = raw as Partial<McpToHost> & Record<string, unknown>;
       if (!sessionId) {
+        // A status query (webop doctor): answered and closed without opening a session.
+        if (m.type === "ping" && hello) {
+          writeLine(sock, {
+            type: "pong", profile_id: hello.profile_id, profile_label: hello.profile_label,
+            extension_version: String(hello.extension_version), webop_version: VERSION, sessions: sessions.size,
+          } satisfies HostToMcp);
+          sock.end();
+          return;
+        }
         if (m.type !== "open") {
           log(`client first message not open (${String(m.type)}); closing`);
           sock.destroy();
