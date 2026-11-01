@@ -18,6 +18,7 @@ test("levelFor maps tools and actions to levels", () => {
   assert.equal(levelFor("tabs_create"), "read");
   assert.equal(levelFor("read_page"), "read");
   assert.equal(levelFor("get_page_text"), "read");
+  assert.equal(levelFor("form_input"), "act");
   assert.equal(levelFor("tabs_close"), null);
   assert.equal(levelFor("tabs_list"), null);
   assert.equal(levelFor("javascript"), "javascript");

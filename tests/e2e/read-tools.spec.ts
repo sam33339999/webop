@@ -92,3 +92,92 @@ test("t_page_text_denied_site: a denied site answers permission_denied without a
   assert.equal(errOf(await call(h.sw, "get_page_text", { tab_id })).code, "permission_denied");
   await noPopup(h);
 });
+
+// --- browser_form_input ---
+
+/** read_page's interactive tree, and the ref of the element whose line matches `line`. */
+async function refOf(h: Launched, tab_id: number, line: RegExp): Promise<string> {
+  const tree = textOf(await call(h.sw, "read_page", { tab_id }));
+  const hit = tree.split("\n").find((l) => line.test(l));
+  const ref = hit && /\[(ref_\d+)\]/.exec(hit)?.[1];
+  assert.ok(ref, `no line matching ${line} in:\n${tree}`);
+  return ref;
+}
+
+test("t_form_input_text: sets a text field, fires input/change, returns a screenshot without submitting", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const page = await pageOf(h, "/form2.html");
+  const ref = await refOf(h, tab_id, /textbox "Name"/);
+  const r = await call(h.sw, "form_input", { tab_id, ref, value: "Ada Lovelace" });
+  assert.match(textOf(r), new RegExp(`^Set text input ${ref}\\.`));
+  assert.ok("content" in r && r.content.some((b) => b.type === "image"), "no screenshot");
+  assert.equal(await page.locator("#name").inputValue(), "Ada Lovelace");
+  const events = await page.evaluate(() => (window as any).events);
+  assert.ok(events.input >= 1 && events.change >= 1, JSON.stringify(events));
+  assert.equal(await page.title(), "form2");
+});
+
+test("t_form_input_select_by_label: an option's visible text selects it", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const page = await pageOf(h, "/form2.html");
+  const ref = await refOf(h, tab_id, /select "Color/);
+  textOf(await call(h.sw, "form_input", { tab_id, ref, value: "Green" }));
+  assert.equal(await page.locator("#color").inputValue(), "g");
+  textOf(await call(h.sw, "form_input", { tab_id, ref, value: "b" }));
+  assert.equal(await page.locator("#color").inputValue(), "b");
+  assert.equal(errOf(await call(h.sw, "form_input", { tab_id, ref, value: "Purple" })).code, "invalid_args");
+});
+
+test("t_form_input_checkbox: booleans only", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const page = await pageOf(h, "/form2.html");
+  const ref = await refOf(h, tab_id, /checkbox "Agree"/);
+  textOf(await call(h.sw, "form_input", { tab_id, ref, value: true }));
+  assert.equal(await page.locator("#agree").isChecked(), true);
+  const e = errOf(await call(h.sw, "form_input", { tab_id, ref, value: "yes" }));
+  assert.equal(e.code, "invalid_args");
+  assert.match(e.message, /^Not performed/);
+  const radio = await refOf(h, tab_id, /radio "Large"/);
+  textOf(await call(h.sw, "form_input", { tab_id, ref: radio, value: true }));
+  assert.equal(await page.locator("#large").isChecked(), true);
+});
+
+test("t_form_input_password_not_echoed: the value never appears in the result", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const page = await pageOf(h, "/form2.html");
+  const ref = await refOf(h, tab_id, /textbox "Password"/);
+  const r = await call(h.sw, "form_input", { tab_id, ref, value: "s3cret" });
+  assert.ok("content" in r, JSON.stringify(r));
+  assert.ok(!allText(r).includes("s3cret"), allText(r));
+  assert.equal(await page.locator("#pw").inputValue(), "s3cret");
+});
+
+test("t_form_input_unsupported: read-only, non-field and stale refs are refused", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/form2.html`);
+  const locked = await refOf(h, tab_id, /textbox "Locked"/);
+  assert.equal(errOf(await call(h.sw, "form_input", { tab_id, ref: locked, value: "x" })).code, "invalid_args");
+  const plain = await refOf(h, tab_id, /textbox "Plain"/);
+  assert.equal(errOf(await call(h.sw, "form_input", { tab_id, ref: plain, value: "x" })).code, "invalid_args");
+  assert.equal(errOf(await call(h.sw, "form_input", { tab_id, ref: "ref_99999", value: "x" })).code, "stale_ref");
+  assert.equal(errOf(await call(h.sw, "form_input", { tab_id, ref: locked, value: { a: 1 } })).code, "invalid_args");
+});
+
+test("t_form_input_unauthorized: an ungranted site asks for act; declining leaves the field unchanged", async () => {
+  const h = await open({ localhost: ["act"], "127.0.0.1": ["read"] });
+  const tab_id = await openTab(h.sw, `${h.altUrl}/form2.html`);
+  const page = await pageOf(h, "/form2.html");
+  const ref = await refOf(h, tab_id, /textbox "Name"/);
+  const r = call(h.sw, "form_input", { tab_id, ref, value: "nope" });
+  const popup = await popupOf(h);
+  assert.equal(await popup.locator("#level").textContent(), "act");
+  await popup.getByRole("button", { name: "拒絕" }).click();
+  const e = errOf(await r);
+  assert.equal(e.code, "permission_denied");
+  assert.match(e.message, /no field was changed/);
+  assert.equal(await page.locator("#name").inputValue(), "");
+});

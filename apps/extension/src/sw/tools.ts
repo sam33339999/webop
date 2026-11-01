@@ -332,6 +332,17 @@ async function recheck(session_id: string, tabId: number, performed: boolean, ct
   throw new CdpError("permission_required", `${lead} tab is now on ${site}, which needs the user's approval; no content is returned. A prompt was shown to the user; after they allow it, retry (e.g. read_page).`);
 }
 
+/** Input may only go to the site the user authorized: a tab that moved (or is moving) elsewhere is not touched. */
+async function assertStillOn(tabId: number, authorizedUrl: string): Promise<void> {
+  const { url, pendingUrl } = await tabUrls(tabId);
+  const was = siteOf(authorizedUrl);
+  for (const u of [url, pendingUrl]) {
+    if (u !== undefined && siteOf(u) !== was) {
+      throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(u) ?? u} before input was sent.`);
+    }
+  }
+}
+
 /** Gives a navigation triggered by an action time to start, then waits for it to settle. */
 async function settle(tabId: number): Promise<void> {
   await new Promise((r) => setTimeout(r, 150));
@@ -515,16 +526,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         await gate(call.session_id, ctx, first, "act", { tabId, marker: markerFor(action, tabId, call.args), what: "no input was sent" });
       }
       void showGlow(call.session_id, tabId, ctx.stopped);
-      const authorizedUrl = first;
-      const assertSameSite = async (): Promise<void> => {
-        const { url, pendingUrl } = await tabUrls(tabId);
-        const was = siteOf(authorizedUrl);
-        for (const u of [url, pendingUrl]) {
-          if (u !== undefined && siteOf(u) !== was) {
-            throw new CdpError("security_check_failed", `Not performed: the tab moved from ${was ?? authorizedUrl} to ${siteOf(u) ?? u} before input was sent.`);
-          }
-        }
-      };
+      const assertSameSite = () => assertStillOn(tabId, first);
       const guard: InputGuard = {
         async beforeInput() {
           if (__DEV__) await devHooks.afterTarget?.(tabId);
@@ -588,6 +590,10 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => readPage(call, ctx));
   }
+  if (call.tool === "form_input") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => formInput(call, ctx));
+  }
   if (call.tool === "get_page_text") {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => pageText(call, ctx));
@@ -614,6 +620,62 @@ async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   await assertLive(call.session_id);
   await recheck(call.session_id, tabId, false, ctx);
   return { content: [{ type: "text", text: r.text }] };
+}
+
+type FormInputReply = { ok: true; kind: string } | { error: "stale_ref" | "unsupported" | "bad_value"; message: string };
+
+/**
+ * Sets one form field by ref (act level). The value is never echoed back: it may be a password. The same checks as
+ * computer input apply: permission before the page is touched, the tab still on the authorized site, the page alive.
+ */
+async function formInput(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const { ref, value } = call.args;
+  if (typeof ref !== "string" || ref === "") invalid("ref must be a non-empty string.");
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") invalid("value must be a string, number or boolean.");
+  await assertOwned(call.session_id, tabId);
+  const authorizedUrl = await currentUrl(tabId);
+  await gate(call.session_id, ctx, authorizedUrl, "act", { tabId, what: "no field was changed" });
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  await assertStillOn(tabId, authorizedUrl);
+  await assertResponsive(tabId);
+  assertBeforeDeadline(ctx);
+  if (__DEV__) await devHooks.afterTarget?.(tabId);
+  await assertStillOn(tabId, authorizedUrl);
+  assertBeforeDeadline(ctx);
+  notePageChange(tabId);
+  let kind: string;
+  try {
+    const r = await askContent<FormInputReply | undefined>(tabId, { type: "webop:form_input", ref, value });
+    if (!r) throw new CdpError("internal", "Page content script returned no reply.");
+    if ("error" in r) {
+      // The page refused before changing anything.
+      if (r.error === "stale_ref") throw new CdpError("stale_ref", `Not performed: ${ref} ${r.message}; call read_page again to get fresh refs.`);
+      throw new CdpError("invalid_args", `Not performed: ${ref}: ${r.message}.`);
+    }
+    kind = r.kind;
+  } catch (caught) {
+    const e = viaStop(caught, ctx);
+    if (e instanceof CdpError && (e.message.startsWith("Not performed") || e.code === "tab_not_in_session")) throw e;
+    const message = e instanceof CdpError && e.code === "stopped_by_user" ? "the user pressed stop." : e instanceof Error ? e.message : String(e);
+    throw new CdpError(e instanceof CdpError ? e.code : "internal", `The field may have been changed: ${message}`);
+  }
+  await settle(tabId);
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
+  const done = `Set ${kind} ${ref}.`;
+  let shot: Awaited<ReturnType<typeof screenshot>>;
+  try {
+    shot = await screenshot(tabId);
+  } catch (e) {
+    if (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code)) throw e;
+    return { content: [{ type: "text", text: `${done} Screenshot failed: ${e instanceof Error ? e.message : String(e)}` }] };
+  }
+  await recheck(call.session_id, tabId, true, ctx);
+  if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
+  const { block, ctx: shotCtx } = shot;
+  return { content: [{ type: "text", text: `${done} Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
 }
 
 async function pageText(call: ToolCall, ctx: CallContext): Promise<Outcome> {

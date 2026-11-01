@@ -61,6 +61,16 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tab_id: z.number(), max_chars: z.number().optional() },
   },
   {
+    tool: "form_input",
+    name: "browser_form_input",
+    description:
+      "Set a form field by ref from browser_read_page: text-like inputs and textareas take a string or number, a select takes an " +
+      "option value or its visible text, checkboxes and radios take true/false. Fires input and change events; does not submit. " +
+      "The value is not echoed back. Returns a screenshot." +
+      SAFETY,
+    shape: { tab_id: z.number(), ref: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) },
+  },
+  {
     tool: "computer",
     name: "browser_computer",
     description:

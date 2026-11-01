@@ -11,7 +11,8 @@ guardHolder.__wopAx = { alive: () => !!chrome.runtime?.id };
 type AxMessage =
   | { type: "webop:read_page"; filter?: "interactive"; ref_id?: string; max_chars?: number; ref_base?: number }
   | { type: "webop:ref_point"; ref: string }
-  | { type: "webop:frame_check"; x?: number; y?: number };
+  | { type: "webop:frame_check"; x?: number; y?: number }
+  | { type: "webop:form_input"; ref: string; value: unknown };
 
 const MAX_DEPTH = 15;
 const MAX_NODES = 10000;
@@ -269,6 +270,65 @@ function refPoint(ref: string): { x: number; y: number } | { error: "stale_ref";
   return { x, y };
 }
 
+type FormInputReply = { ok: true; kind: string } | { error: "stale_ref" | "unsupported" | "bad_value"; message: string };
+
+const NOT_FILLABLE = new Set(["button", "submit", "reset", "image", "file", "hidden"]);
+
+/** Fires what a user's edit would: `input` then `change`, both bubbling (frameworks listen for these). */
+function fireEdit(el: Element): void {
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+/** Sets `value` through the prototype setter, so frameworks that wrap the instance property still see the change. */
+function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value);
+}
+
+/** Sets a form control's value by ref. Refs only ever name top-document elements, so no frame is crossed. */
+function formInput(ref: string, value: unknown): FormInputReply {
+  const el = lookup(ref);
+  if (!el) return { error: "stale_ref", message: "no longer exists" };
+  const unsupported = (why: string): FormInputReply => ({ error: "unsupported", message: why });
+  const bad = (why: string): FormInputReply => ({ error: "bad_value", message: why });
+  if ((el as HTMLInputElement).disabled) return unsupported("the element is disabled");
+  if (el instanceof HTMLInputElement) {
+    const type = el.type;
+    if (el.readOnly) return unsupported("the element is read-only");
+    if (type === "checkbox" || type === "radio") {
+      if (typeof value !== "boolean") return bad(`${type} needs a boolean value`);
+      el.checked = value;
+      fireEdit(el);
+      return { ok: true, kind: type };
+    }
+    if (NOT_FILLABLE.has(type)) return unsupported(`input type "${type}" cannot be filled; use browser_computer`);
+    if (typeof value !== "string" && typeof value !== "number") return bad("value must be a string or number");
+    setNativeValue(el, String(value));
+    fireEdit(el);
+    return { ok: true, kind: `${type} input` };
+  }
+  if (el instanceof HTMLTextAreaElement) {
+    if (el.readOnly) return unsupported("the element is read-only");
+    if (typeof value !== "string" && typeof value !== "number") return bad("value must be a string or number");
+    setNativeValue(el, String(value));
+    fireEdit(el);
+    return { ok: true, kind: "textarea" };
+  }
+  if (el instanceof HTMLSelectElement) {
+    if (el.multiple) return unsupported("multi-select is not supported; use browser_computer");
+    if (typeof value !== "string" && typeof value !== "number") return bad("value must be an option value or its text");
+    const want = String(value);
+    const options = [...el.options];
+    const match = options.find((o) => o.value === want) ?? options.find((o) => (o.textContent ?? "").trim() === want.trim());
+    if (!match) return bad(`no option has value or text ${JSON.stringify(want)}`);
+    el.value = match.value;
+    fireEdit(el);
+    return { ok: true, kind: "select" };
+  }
+  return unsupported(`<${el.tagName.toLowerCase()}> is not a form field; use browser_computer`);
+}
+
 type FrameVerdict = { ok: true } | { ok: false; src: string };
 
 /**
@@ -304,6 +364,8 @@ chrome.runtime.onMessage.addListener((msg: AxMessage, _sender, sendResponse) => 
     sendResponse(refPoint(msg.ref));
   } else if (msg?.type === "webop:frame_check") {
     sendResponse(frameCheck(msg.x, msg.y));
+  } else if (msg?.type === "webop:form_input") {
+    sendResponse(formInput(msg.ref, msg.value));
   }
   return false;
 });
