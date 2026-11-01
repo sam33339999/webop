@@ -1,43 +1,123 @@
 # webop
 
-與 agent 無關的瀏覽器執行器：一個 MV3 Chrome 擴充功能加上 `webop` CLI，透過 stdio MCP（opencode、grok 等任何支援的 agent，可同時多個）對外提供十一個 `browser_*` 工具（分頁、導航、讀取、截圖與 zoom、輸入、填表、JavaScript、profile 選擇），讓 opencode 等 agent 操作你日常 Chrome 中已授權的網站。
+English | [繁體中文](README.zh-tw.md)
 
-## 架構
+webop lets any MCP-capable coding agent (opencode, grok CLI, …) drive **the Chrome you already use**: with your logins and cookies, on the sites you allow, while you watch and can stop it at any moment.
 
-agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop native-host`（Native Messaging）⇄ Chrome 擴充功能（Service Worker + chrome.debugger）
+It is a Manifest V3 browser extension plus a small `webop` command-line program. The agent talks to `webop` over stdio MCP; `webop` relays to the extension through Chrome's Native Messaging; the extension acts on the page through `chrome.debugger`.
 
-## 文件
+```
+agent ⇄ webop mcp (stdio MCP) ⇄ per-profile Unix socket ⇄ webop native-host (Native Messaging) ⇄ extension ⇄ your tabs
+```
 
-- 設計規格：[docs/superpowers/specs/2026-10-31-webop-design.md](docs/superpowers/specs/2026-10-31-webop-design.md)
-- 實作計畫：[M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md)、[M4](docs/superpowers/plans/2026-10-31-webop-m4.md)、[M5](docs/superpowers/plans/2026-10-31-webop-m5.md)
-- 接上 agent：[docs/agents/README.md](docs/agents/README.md)（[opencode](docs/agents/opencode.md)、[grok](docs/agents/grok.md)）
-- 手動驗收清單：[docs/acceptance/](docs/acceptance/)
-- 未來想做的功能：[docs/roadmap.md](docs/roadmap.md)
+Current version: **0.6.2** (milestones M1–M6 done and manually accepted). macOS only for now.
 
-## 安裝順序
+## What the agent gets
 
-1. `pnpm install && pnpm -r build && pnpm build:sea`，產生單一執行檔 `apps/webop/dist/webop`。
-2. `apps/webop/dist/webop install` 註冊 Native Messaging host（會印出可直接貼進 opencode 的設定與 grok 的 `grok mcp add` 指令）。
-3. 在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。
-4. 有問題先跑 `apps/webop/dist/webop doctor`。
+Eleven `browser_*` tools:
 
-要移除 host：`apps/webop/dist/webop uninstall [--browser-dir <dir>]`。
+| Tool | Purpose | Permission level |
+|---|---|---|
+| `browser_tabs_list` | List the tabs in this agent's tab group | none (titles/URLs of unapproved sites are hidden) |
+| `browser_tabs_create` | Open a tab in the group | `read` |
+| `browser_tabs_close` | Close one of the group's tabs | none |
+| `browser_navigate` | Go to a URL, or `back` / `forward` | `read` |
+| `browser_read_page` | Accessibility tree with element refs | `read` |
+| `browser_get_page_text` | Main content as plain text | `read` |
+| `browser_computer` | Screenshot, `zoom`, click / type / key / scroll / drag / hover | screenshot and zoom `read`, the rest `act` |
+| `browser_form_input` | Set a form field by ref (never echoes the value) | `act` |
+| `browser_javascript` | Run JavaScript in the page (off by default) | `javascript` |
+| `browser_profiles_list` | List online Chrome profiles | — |
+| `browser_profile_select` | Pick the profile this agent drives | — |
 
-## 授權與停止
+## Safety model
 
-agent 第一次操作某個網站時會跳出詢問視窗（拒絕／本次允許／永久允許），授權分 `read`、`act`（含 `read`）、`javascript` 三級；options 頁可管理永久授權、拒絕清單、JavaScript 開關與 profile 顯示名稱。同時有多個 Chrome profile 在線時，用 `browser_profile_select` 或 `webop mcp --profile <名稱>` 選定；截圖大小可用 `--image-max-px` 等參數依模型調整。操作期間可按頁面右下角的「停止」按鈕、工具列圖示（停止所有 session）或 debugger 資訊列的「取消」隨時中止。細節、錯誤碼與驗收清單見 [docs/agents/opencode.md](docs/agents/opencode.md)。
+- **Per-site permission.** The first time an agent touches a site you get a popup: *Deny*, *Allow this session*, or *Always allow*. Levels are `read`, `act` (includes `read`), and `javascript` (separate, and also behind a global switch in the options page). A deny list blocks sites without asking.
+- **Re-checked before acting.** If the tab moved to another site between permission and input, the input is not sent; if a read lands on an unapproved site, no content is returned.
+- **Visible and stoppable.** Agent tabs live in a tab group titled `webop · <agent name>` with a glowing border and cursor. Stop with the button in the page, the toolbar icon (stops every agent), or the debugger bar's *Cancel*.
+- **Isolated agents.** Each agent connection is its own session with its own tab group; agents cannot touch each other's tabs. *Allow this session* belongs to one agent only.
+- Page content is data, never instructions; the tool descriptions tell agents so.
 
-## 版本
+## Requirements
 
-CLI 與擴充功能共用一個版本號，每次更新都會改，改了什麼記在 [CHANGELOG.md](CHANGELOG.md)。查版本：`node apps/webop/dist/webop.mjs --version`，或擴充功能 options 頁的 Version。
+- macOS
+- Node 26 and pnpm (`fnm install 26 && fnm use 26`; building the single executable needs Node 26)
+- Chrome 116 or later (Brave works too)
 
-## 開發
-
-需要 Node 26（`fnm use 26`）與 pnpm。
+## Install
 
 ```bash
+fnm use 26
 pnpm install
-pnpm test        # 單元測試（node --test）
-pnpm test:e2e    # e2e（Playwright Chromium，暫存 profile；dev build 輸出到 apps/extension/dist-dev，不影響 dist）
-pnpm typecheck
+pnpm -r build
+pnpm build:sea                         # builds the single executable apps/webop/dist/webop
+apps/webop/dist/webop --version        # webop 0.6.2
 ```
+
+Register the Native Messaging host **before** loading the extension:
+
+```bash
+apps/webop/dist/webop install
+```
+
+It prints the extension id, an opencode config snippet and a `grok mcp add` command, all with absolute paths filled in. Then open `chrome://extensions`, enable Developer mode, choose *Load unpacked* and select `apps/extension/dist`.
+
+If you loaded the extension first, open its options page (or reload it) and it connects right away. Re-run `webop install` after moving the repo or rebuilding elsewhere.
+
+Check everything with:
+
+```bash
+apps/webop/dist/webop doctor
+```
+
+It prints one `ok` / `warn` / `FAIL` line per check (host manifest, wrapper script, online profiles, extension version) with a hint for each problem, and exits 1 on any `FAIL`.
+
+Uninstall: `apps/webop/dist/webop uninstall`.
+
+## Connect an agent
+
+- **opencode** — paste the snippet `webop install` printed into `opencode.json`. Details: [docs/agents/opencode.md](docs/agents/opencode.md).
+- **grok CLI** — run the printed `grok mcp add webop … -- mcp`. Details: [docs/agents/grok.md](docs/agents/grok.md).
+- Anything else that launches a stdio MCP server: run `apps/webop/dist/webop mcp`.
+
+Useful `webop mcp` flags: `--profile <name or id>` pins a Chrome profile; `--image-max-px`, `--image-max-tokens`, `--px-per-token` size screenshots for your model.
+
+A shared system-prompt template and notes on running several agents at once: [docs/agents/README.md](docs/agents/README.md).
+
+## Multiple Chrome profiles
+
+Every profile with the extension is reachable. With more than one online, an agent gets `profile_required` until it calls `browser_profile_select` (or was started with `--profile`). A profile goes offline when its last window closes and comes back when a window opens. Rename a profile in the extension's options page.
+
+## Versions
+
+The CLI and the extension always share one version number, and every change bumps it ([CHANGELOG.md](CHANGELOG.md)). Check it with `apps/webop/dist/webop --version`, the extension card in `chrome://extensions`, or `webop doctor`, which also flags a mismatch between the two.
+
+## Development
+
+```bash
+pnpm test        # unit tests (node --test)
+pnpm typecheck
+pnpm test:e2e    # end-to-end with Playwright Chromium and throwaway profiles; builds dist-dev and the SEA
+```
+
+Automated tests never touch your own browser profile. Headless Chromium keeps rendering background tabs, so behaviour that depends on a real browser's background tabs is covered by the manual acceptance checklists.
+
+| Path | Contents |
+|---|---|
+| `packages/core` | protocol types, coordinate mapping, screenshot budget, permission decisions |
+| `apps/extension` | MV3 extension: service worker, CDP, capture, input, permissions, overlay, page scripts |
+| `apps/webop` | CLI: `mcp`, `native-host`, `install`, `uninstall`, `doctor`, single-executable build |
+| `tests/e2e` | browser end-to-end tests |
+| `docs` | design spec, plans, agent guides, acceptance records, roadmap |
+
+## Documentation
+
+- Design spec: [docs/superpowers/specs/2026-10-31-webop-design.md](docs/superpowers/specs/2026-10-31-webop-design.md)
+- Implementation plans: [M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md), [M4](docs/superpowers/plans/2026-10-31-webop-m4.md), [M5](docs/superpowers/plans/2026-10-31-webop-m5.md), [M6](docs/superpowers/plans/2026-11-01-webop-m6.md)
+- Agent guides: [docs/agents/](docs/agents/README.md)
+- Manual acceptance records: [docs/acceptance/](docs/acceptance/) (M4–M5 results are in [docs/agents/opencode.md](docs/agents/opencode.md))
+- Roadmap: [docs/roadmap.md](docs/roadmap.md)
+
+## Not in v1
+
+Chrome Web Store / notarized distribution, Linux and Windows, GIF recording, reading console and network traffic, file upload, and closing a session's tabs automatically when it ends. The last four and cross-platform support are on the [roadmap](docs/roadmap.md).
