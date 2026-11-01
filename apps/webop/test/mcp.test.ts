@@ -410,3 +410,20 @@ test("no budget flags: open carries no budget", async () => {
   assert.equal(host.seen.find((m) => m.type === "open").budget, undefined);
   host.close();
 });
+
+test("t_bound_label_follows_rename: not_connected names the profile by its latest label", async () => {
+  const root = tmpRoot();
+  const b = await fakeHost(root, "b", "Personal", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "B" }] }));
+  descriptor(root, "a", "Work");
+  const client = await connectClient({ root });
+  await client.callTool({ name: "browser_profile_select", arguments: { profile: "b" } });
+  descriptor(root, "b", "Home");
+  await sleep(600);
+  assert.equal(text(await client.callTool({ name: "browser_tabs_list", arguments: {} }) as any), "B");
+  fs.rmSync(descriptorPath("b", root));
+  await sleep(600);
+  const r: any = await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.match(text(r), /^not_connected: Profile "Home" is not online/);
+  b.close();
+});

@@ -200,6 +200,8 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; p
         closeConn();
         return fail("not_connected", `Profile "${(binding as { profile_label: string }).profile_label}" is not online. Online: ${describe(profiles) || "none"}.`);
       }
+      // Keep the last label seen online, so a later "not online" message names the profile as the user now calls it.
+      binding = { ...binding, profile_label: target.profile_label };
       if (conn && conn.profile_id === target.profile_id) return conn;
       closeConn();
       if (!connecting) connecting = establish(target).finally(() => { connecting = null; });

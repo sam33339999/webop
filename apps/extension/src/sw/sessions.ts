@@ -250,7 +250,16 @@ export async function createTab(session_id: string, url: string, beforeCreate: (
     // The lock wait can be long; a stop (or cancel) that landed meanwhile must not open the tab.
     beforeCreate();
     const st = open(s, session_id, session_id);
-    const tab = await chrome.tabs.create({ url, active: false });
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.create({ url, active: false });
+    } catch (e) {
+      // The profile has no window to put the tab in (normally the link is dropped before an agent can get here).
+      if (String(e instanceof Error ? e.message : e).includes("No current window")) {
+        throw new CdpError("not_connected", "Not performed: this browser profile has no open window; ask the user to open one, then retry.");
+      }
+      throw e;
+    }
     if (tab.id === undefined) throw new CdpError("internal", "Created tab has no id.");
     await enroll(s, st, tab.id);
     return tab.id;

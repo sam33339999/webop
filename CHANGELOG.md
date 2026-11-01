@@ -8,6 +8,13 @@
 
 版本規則：里程碑升 minor（M5 → 0.5.0）；里程碑內的修正與小功能升 patch（0.5.1、0.5.2…）。
 
+## 0.5.1 — 2026-11-01
+
+- 修正：某個 profile 的所有一般視窗關掉後（瀏覽器仍在執行），該 profile 仍被當成在線，呼叫回 `internal: No current window`。現在擴充功能會在最後一個一般視窗關閉時斷線、不再自動重連，等該 profile 開出視窗才重新上線；agent 得到的是 `not_connected`。詢問視窗不算一般視窗。
+- 防禦：萬一仍遇到 `No current window`，回 `not_connected` 並請使用者開一個視窗，而不是 `internal`。
+- 修正：選定 profile 後才改名，`not_connected` 訊息仍顯示舊名稱。
+- 修正：擴充功能正在連線時改 profile 名稱，改名可能被丟掉。
+
 ## 0.5.0 — 2026-11-01（M5）
 
 - 新工具：`browser_get_page_text`、`browser_form_input`、`browser_javascript`（預設關閉）。

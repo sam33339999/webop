@@ -99,7 +99,8 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 - `browser_profiles_list` 列出在線的 profile（`profile_id`、`profile_label`、`selected`）。
 - `browser_profile_select { profile }` 用 profile_id 或完全相同的顯示名稱（不分大小寫）選定一個；之後這個 session 只用它。切換會關掉舊連線（舊 session 結束，分頁留在原處）。
 - 也可以從一開始就釘住：`webop mcp --profile <profile_id 或顯示名稱>`（在 `opencode.json` 的 `command` 陣列末尾加上 `"--profile", "<label>"`）。找不到符合的 profile 時呼叫回 `not_connected`；名稱同時符合多個時回 `profile_required`，請改用 profile_id。
-- 選定的 profile 關掉之後，呼叫回 `not_connected` 並點名該 profile，**不會**自動改連另一個在線的 profile。
+- 選定的 profile 關掉之後，呼叫回 `not_connected` 並點名該 profile（用它最新的顯示名稱），**不會**自動改連另一個在線的 profile。
+- 「關掉」指該 profile 的**一般視窗全部關閉**，瀏覽器本身不必結束（macOS 上 Chrome 關掉所有視窗後仍會在背景執行）。這時擴充功能會主動斷線，該 profile 的「本次允許」隨之收回，`browser_profiles_list` 也不再列出它；詢問視窗與 devtools 不算一般視窗。再開一個該 profile 的視窗就會自動上線，agent 的下一個呼叫即可使用，不必重啟 opencode。（0.5.1 起）
 - profile 的顯示名稱預設是登入的 Google 帳號 email，沒登入時是 `profile-<id 前 6 碼>`；可在 options 頁的 `Profile name` 欄位改名，按 Save 後立即生效（`browser_profiles_list` 不必重啟就看得到）。清空再 Save 會回到預設名稱。
 - 中途才打開第二個 profile 也一樣：尚未選定時，下一個呼叫就會回 `profile_required`，已在操作的 session 不會被默默換掉。
 
@@ -222,21 +223,94 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 
 ### M5（讀取工具與多 profile）
 
-- 日期：
-- Chrome 版本：
-- opencode 版本：
+- 日期：2026-11-01
+- Chrome 版本：Brave 156.1.98.62（Chromium 156）
+- opencode 版本：v2.2.5
 
-先重新 build（`pnpm -r build`），確認 `node apps/webop/dist/webop.mjs --version` 印出 `webop 0.5.0`；在 `chrome://extensions` 重新載入擴充功能，確認卡片（或 options 頁的 Version）也是 `0.5.0`（manifest 新增了 `identity` 權限，Chrome 可能要你確認），再完整重啟 opencode（含 `pkill -f "opencode serve"`）。
+先重新 build（`pnpm -r build`），確認 `node apps/webop/dist/webop.mjs --version` 印出目前版本（例如 `webop 0.5.1`）；在 `chrome://extensions` 重新載入擴充功能，確認卡片（或 options 頁的 Version）也是同一個版本（manifest 新增了 `identity` 權限，Chrome 可能要你確認），再完整重啟 opencode（含 `pkill -f "opencode serve"`）。
 
 | # | 步驟 | 預期 | 結果（通過／失敗＋備註） |
 |---|---|---|---|
-| 1 | 在一個你已登入的網站（例如 GitHub 通知頁）請 agent 用 `browser_get_page_text` 讀內容 | 回傳 `Title:`／`URL:` 加主內容純文字，不含導覽列與頁尾 | |
-| 2 | 請 agent 用 `browser_form_input` 在搜尋框填一段文字（不要送出） | 欄位出現文字、沒有送出；回傳 `Set … ref_N.` 加截圖，回傳文字不含所填內容 | |
-| 3 | 請 agent 先截圖，再用 `zoom` 放大頁面某一區並描述 | 回傳 `Zoom of [...] at WxH px` 與放大圖；之後用原截圖座標點擊仍點得準 | |
-| 4 | 開第二個載入 webop 的 Chrome profile，再請 agent 做任一操作 | 回 `profile_required`，列出兩個 profile；請 agent `browser_profile_select` 第二個後，新分頁只出現在第二個 profile | |
-| 5 | 承上，把選定的那個 profile 視窗全部關掉，再請 agent 操作 | 回 `not_connected` 並點名該 profile，不會改去操作另一個 | |
-| 6 | 請 agent 用 `browser_javascript` 讀 `document.title` | 預設回 `permission_denied`（JavaScript 未開啟），不跳詢問；在 options 打開開關後再試，跳出等級 `javascript` 的詢問，允許後回傳標題字串 | |
-| 7 | 在 options 頁的 `Profile name` 改名並 Save | `browser_profiles_list` 立即顯示新名稱 | |
+| 1 | 在一個你已登入的網站（例如 GitHub 通知頁）請 agent 用 `browser_get_page_text` 讀內容 | 回傳 `Title:`／`URL:` 加主內容純文字，不含導覽列與頁尾 | 通過。受測環境沒有已登入的網站，改用公開頁面 `en.wikipedia.org/wiki/Web_browser`：回 `Title: Web browser - Wikipedia`／`URL: …`，主內容 19648 字元；`Main page`、`Random article`、`Donate`、`Contents`、`Privacy policy`、`About Wikipedia`、`Disclaimers`、`Create account`、`Log in` 等導覽列／側欄／頁尾字串都不在輸出裡。 |
+| 2 | 請 agent 用 `browser_form_input` 在搜尋框填一段文字（不要送出） | 欄位出現文字、沒有送出；回傳 `Set … ref_N.` 加截圖，回傳文字不含所填內容 | 通過。Wikipedia 側欄搜尋框（`searchbox "Search Wikipedia" [ref_2]`）：回 `Set search input ref_2.` 加截圖，欄位顯示 `webop acceptance test`、網址仍是 `…/Web_browser`（未送出），回傳文字不含填入內容。 |
+| 3 | 請 agent 先截圖，再用 `zoom` 放大頁面某一區並描述 | 回傳 `Zoom of [...] at WxH px` 與放大圖；之後用原截圖座標點擊仍點得準 | 通過。截圖 `Screenshot 1568x606 px`；`zoom` 區域 `[380,40,1000,240]` 回 `Zoom of [380,40,1000,240] at 1360x438 px`（約 2.2 倍），可清楚辨識標題、Article／Talk 分頁與目錄。之後用**原截圖座標** `(455,119)` 點左側目錄的「History」精準命中，頁面捲到 History 段、該目錄項變為選取。 |
+| 4 | 開第二個載入 webop 的 Chrome profile，再請 agent 做任一操作 | 回 `profile_required`，列出兩個 profile；請 agent `browser_profile_select` 第二個後，新分頁只出現在第二個 profile | 通過。第二個 profile 上線後，`browser_tabs_create` 回 `profile_required: Multiple browser profiles are online: profile-600b0f (600b0f4f-…), profile-841e4d (841e4df4-…)`。`browser_profile_select { profile: "profile-841e4d" }` 後開 `https://example.org`，新分頁只出現在第二個 profile 的視窗，第一個 profile 沒有多出分頁。 |
+| 5 | 承上，把選定的那個 profile 視窗全部關掉，再請 agent 操作 | 回 `not_connected` 並點名該 profile，不會改去操作另一個 | 部分通過／步驟需修正。只關閉該 profile 的所有視窗**不會**讓它離線：擴充功能的 service worker 因持有 native messaging 連線而不被回收（實測 kill 掉該 profile 的 host 後 4 秒內自動重連、生成新 host），此時 `browser_tabs_create` 回的是 `internal: No current window`，`browser_profiles_list` 仍把該 profile 列為在線。整個 Brave 結束後才得到預期結果：`not_connected: Profile "profile-841e4d" is not online. Online: none.`，且全程沒有改去操作另一個 profile。建議把步驟改成「完全結束該 profile 的瀏覽器（或停用該 profile 的 webop 擴充功能）」；根本修正見下方「待修正問題：關掉 profile 視窗後仍被視為在線」。另註：選定後才改的顯示名稱不會更新到已綁定 session 的錯誤訊息（仍顯示選定當時的舊 label `profile-841e4d`），要等下一個 session 才會用新名稱。 |
+| 6 | 請 agent 用 `browser_javascript` 讀 `document.title` | 預設回 `permission_denied`（JavaScript 未開啟），不跳詢問；在 options 打開開關後再試，跳出等級 `javascript` 的詢問，允許後回傳標題字串 | 通過。options 的全域開關關閉時回 `permission_denied: JavaScript execution is disabled in webop options (site "wikipedia.org").`，不跳詢問。打開開關後在 `iana.org`、`httpbin.org` 各跳一次等級 `javascript` 的詢問，允許後分別回傳 `"Example Domains"` 與 `""`。 |
+| 7 | 在 options 頁的 `Profile name` 改名並 Save | `browser_profiles_list` 立即顯示新名稱 | 通過。把兩個 profile 分別改名為 `normal`、`clean` 並 Save 後，不必重啟，`browser_profiles_list` 立即回 `normal`／`clean`（原本是 `profile-600b0f`／`profile-841e4d`）。 |
+
+**0.5.1 重測第 5 項**（重新 build、重新載入擴充功能、確認版本為 `0.5.1` 後，只關掉選定 profile 的所有視窗，不結束瀏覽器）：結果：
+
+總結（0.5.0）：7 項中 6 項通過。第 5 項的「把 profile 視窗全部關掉」在 macOS 上不會讓該 profile 離線——service worker 只要還持有 native messaging 連線就不會被回收，host 也就不會退出（kill 掉 host 後 4 秒內自動重連）；要等到整個瀏覽器結束（或停用該 profile 的擴充功能）才會回 `not_connected`。其餘觀察：`webop mcp` 回報版本與 manifest 皆為 `0.5.0`；受測環境沒有已登入網站，第 1 項以公開頁面驗證；兩個 profile 的改名即時反映在 `browser_profiles_list`，但已綁定 session 的 `not_connected` 訊息仍顯示選定當時的舊 label（`profile-841e4d`）。
+
+### 待修正問題：關掉 profile 視窗後仍被視為在線（M5 #5）
+
+**狀態**：已在 0.5.1 修正（依下方「修正方向」1–5 實作，含 `scheduleReconnect` 抑制與 `No current window` → `not_connected` 的防禦映射；附帶的舊 label 問題也一併修正）。待使用者以 0.5.1 重跑 M5 第 5 項確認。以下保留原始紀錄。
+
+**原狀態**：未修正（2026-11-01 驗收時發現）。優先度 P1——這是 M5「多 profile」主流程最常見的收尾動作，目前會讓工具回一個沒有文件、agent 無法處理的錯誤。
+
+**一句話**：某個 profile 的所有視窗都關了，但瀏覽器（還有其他 profile）仍在跑時，webop 仍把該 profile 當成在線。對它呼叫工具會回 `internal: No current window`，而不是文件承諾的 `not_connected`。
+
+#### 重現步驟
+
+1. 兩個載入 webop 的 profile（例如 `normal`、`clean`）同時在線。
+2. `browser_profile_select { profile: "clean" }` 選定 `clean`，確認工具可用（例如開一個分頁）。
+3. 把 `clean` 這個 profile 的**所有視窗**關掉（分頁、options 頁、`chrome://extensions` 都不要留；另一個 profile 的視窗保持開著）。
+4. 呼叫任一工具，例如 `browser_tabs_create { url: "https://example.org" }`。
+
+#### 實際結果 vs 預期
+
+| 觀察點 | 實際 | 預期 |
+|---|---|---|
+| `browser_profiles_list` | 仍列出 `clean`（`selected: true`） | 不再列出 `clean` |
+| `browser_tabs_create` | `internal: No current window` | `not_connected: Profile "clean" is not online. Online: normal (…)` |
+| 是否改去操作另一個 profile | 沒有（正確） | 沒有（正確） |
+| 重開該 profile 視窗 | 工具恢復可用（host 沒死，不需重連） | 恢復可用 |
+
+只有把整個瀏覽器結束（所有 profile）後，才會得到 `not_connected: Profile "profile-841e4d" is not online. Online: none.`。
+
+#### 根因（附檔案位置）
+
+1. `apps/extension/src/sw/native.ts:78` 的 `connect()` 呼叫 `chrome.runtime.connectNative()` 建立連線後，**從不主動斷線**。
+2. MV3 的 service worker 只要還持有 native messaging port 就不會被回收。實測把該 profile 的 host 程序 kill 掉後，**4 秒內**就重連並產生新的 host——證明 SW 一直活著，只是沒有視窗。
+3. `apps/webop/src/mcp.ts:46-58` 的 `liveProfiles()` 只用 descriptor 裡的 `pid` 判斷在線（descriptor 由 `apps/webop/src/host.ts:147-152` 在 `hello` 時寫入）。host 沒死 → 該 profile 永遠算在線。
+4. host 只會在 stdin 關閉（也就是 port 斷線）時才退出，並清掉 descriptor 與 socket（`apps/webop/src/host.ts:217-247`）。所以「關視窗」這條路徑根本不會走到離線判定。
+5. 最後那個難懂的錯誤：`apps/extension/src/sw/sessions.ts:253` 的 `chrome.tabs.create({ active: false })` 沒有指定 `windowId`，該 profile 沒有 normal window 時 Chrome 會丟 `No current window`；它不是 `CdpError`，於是被 `apps/extension/src/sw/tools.ts:796` 統一包成 `internal`，原始訊息原封不動外露。
+
+#### 影響
+
+- 使用者關掉用完的 profile 後，未選定的 session 照樣被要求 `profile_required`，選到那個幽靈 profile 就整個卡死。
+- `internal` 不在「錯誤碼」表中，系統提示範本也沒教 agent 怎麼辦，agent 只能原樣回報，使用者無法自行修復。
+- 「本次允許」這類 session 授權不會隨關視窗失效（session 綁在 host 連線上），與使用者「關掉 profile 就結束」的預期有落差。沒有視窗時沒有可操作的頁面，因此不涉及跨站資料外洩。
+
+#### 修正方向：extension 端在最後一個視窗關閉時主動斷線
+
+採「關掉 profile = 離線」的語意，靠現有的 host 退出路徑（stdin 關閉 → 刪 descriptor/socket）達成，不需要改 native messaging 協定：
+
+1. 在 `native.ts` 維護「目前有沒有 normal window」的狀態，並註冊 `chrome.windows.onRemoved`。
+2. 視窗關閉後用 `chrome.windows.getAll()` 檢查；**只計 `type === "normal"`**（`prompt.ts` 的詢問視窗是 `popup`，devtools 也不算），清單為空代表該 profile 已關閉 → 主動 `port.disconnect()`。
+3. **必須**抑制 `onDisconnect` 裡的 `scheduleReconnect()`（`native.ts:83-91`），並設一個「等視窗再連」的旗標。否則 1 秒後就重開 host（現行行為已實測會這樣），修正等於無效。
+4. `chrome.windows.onCreated` 與 SW 啟動（`index.ts:27` 的 `startNativeLink`）時，先檢查有沒有 normal window 才 `connect()`；`connect()` 開頭也要擋，避免 SW 被其他事件喚醒又在無視窗時建立 host。
+5. 防禦性補強（可選）：把 Chrome 的 `No current window` 在 `tools.ts:796` 之前映射成 `not_connected`，訊息寫「該 profile 目前沒有視窗，請開啟一個視窗」，這樣即使狀態判斷有漏，agent 也能給出可行動的指示。
+
+#### 不要做的事
+
+- 不要在綁定的 profile 離線時自動改連另一個 profile（維持 M5 既有語意）。
+- 不要把「沒有視窗」當成「瀏覽器已關閉」而動到永久授權；授權存在 `chrome.storage.local`，與視窗狀態無關。
+- 分頁與 session tab 會隨視窗消失，`closeHostSessions()` 已在斷線時處理，不需另外加邏輯。
+
+#### 驗收方式
+
+- 新增 e2e／單元測試（建議名 `t_last_window_closed_goes_offline`）：關閉該 profile 最後一個 normal window → host 退出、descriptor 消失、`browser_profiles_list` 不再列出它、呼叫回 `not_connected: Profile "<label>" is not online. Online: <其他 profile>`。
+- 回歸測試：
+  - 只有詢問視窗（popup）存在時，不可誤判為離線。
+  - 重開該 profile 的視窗後，下一個呼叫要能自動重連，不需重啟 opencode。
+  - `t_bound_profile_gone`、`t_second_profile_mid_session` 仍須通過。
+- 手動：重跑 M5 第 5 項，預期**不必關掉整個 Brave** 就能得到 `not_connected`。
+
+#### 附帶（低優先）
+
+選定 profile 之後才改的顯示名稱，不會更新到已綁定 session 的錯誤訊息：`not_connected` 仍顯示選定當時的舊 label（實測 `profile-841e4d`，而 options 已改成 `clean`）。`browser_profiles_list` 則是即時的。可在 `mcp.ts` 的 binding 每次呼叫時用最新 label 重建訊息。
 
 ### M4（授權與停止）
 

@@ -128,3 +128,67 @@ test("t_cli_profile_flag: `webop mcp --profile <label>` binds without a select c
   const onA = await a.sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.map((t) => t.url ?? "")));
   assert.ok(onA.some((u) => u.endsWith("/button.html")), `tab not in Alpha: ${onA.join(", ")}`);
 });
+
+/** Headless browsers quit with their last window, so the window count is substituted through a dev hook. */
+async function setWindows(h: Launched, n: number | null): Promise<void> {
+  await h.sw.evaluate((count) => {
+    const w = (globalThis as any).__webop;
+    w.nativeDevHooks.normalWindows = count === null ? undefined : async () => count;
+  }, n);
+}
+
+test("t_last_window_closed_goes_offline: no window → host exits and stays down; a window → back online", async () => {
+  const root = await mkdtemp("/tmp/wr-");
+  const a = await started({ root });
+  await a.sw.evaluate(() => chrome.storage.local.set({ "webop.profile_label": "Alpha" }));
+  const b = await started({ root });
+  await b.sw.evaluate(() => chrome.storage.local.set({ "webop.profile_label": "Beta" }));
+  await waitFor(async () => (await descriptors(root)).map((d) => d.profile_label).sort().join(",") === "Alpha,Beta", "both labelled");
+  const client = await mcpClient(root);
+  assert.ok(!(await client.callTool({ name: "browser_profile_select", arguments: { profile: "Beta" } })).isError);
+  const created = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${b.baseUrl}/button.html` } });
+  assert.ok(!created.isError, textOf(created));
+
+  // Beta's last normal window closes.
+  await setWindows(b, 0);
+  await b.sw.evaluate(() => (globalThis as any).__webop.onWindowClosed());
+  await waitFor(async () => (await descriptors(root)).map((d) => d.profile_label).join(",") === "Alpha", "Beta descriptor removed");
+  // It must stay down: no respawned host after the reconnect backoff would have fired.
+  await sleep(2_500);
+  assert.deepEqual((await descriptors(root)).map((d) => d.profile_label), ["Alpha"]);
+  assert.deepEqual(await b.sw.evaluate(() => (globalThis as any).__webop.linkState()), { connected: false, waitingForWindow: true });
+
+  const listed = JSON.parse(textOf(await client.callTool({ name: "browser_profiles_list", arguments: {} }))) as { profile_label: string }[];
+  assert.deepEqual(listed.map((p) => p.profile_label), ["Alpha"]);
+  const r = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${a.baseUrl}/button.html` } });
+  assert.equal(r.isError, true);
+  assert.match(textOf(r), /^not_connected: Profile "Beta" is not online\. Online: Alpha/);
+  const onA = await a.sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.map((t) => t.url ?? "")));
+  assert.ok(!onA.some((u) => u.endsWith("/button.html")), "must not fall back to Alpha");
+
+  // Even an explicit wake (SW restart, backoff timer) does not bring a host up without a window.
+  await b.sw.evaluate(() => (globalThis as any).__webop.onWindowOpened());
+  await sleep(500);
+  assert.deepEqual((await descriptors(root)).map((d) => d.profile_label), ["Alpha"]);
+
+  // A window opens again: Beta is back and usable with the same selection.
+  await setWindows(b, null);
+  await b.sw.evaluate(() => (globalThis as any).__webop.onWindowOpened());
+  await waitFor(async () => (await descriptors(root)).length === 2, "Beta back online");
+  const again = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${b.baseUrl}/button.html` } });
+  assert.ok(!again.isError, textOf(again));
+});
+
+test("t_popup_window_keeps_profile_online: closing a window while a normal one remains changes nothing", async () => {
+  const h = await started();
+  await waitFor(async () => (await descriptors(h.root)).length === 1, "descriptor");
+  // A popup (the permission prompt) opening and closing is not the profile closing.
+  await h.sw.evaluate(async () => {
+    const w = await chrome.windows.create({ url: "about:blank", type: "popup" });
+    await chrome.windows.remove(w!.id!);
+  });
+  await h.sw.evaluate(() => (globalThis as any).__webop.onWindowClosed());
+  await sleep(500);
+  assert.equal((await descriptors(h.root)).length, 1);
+  assert.deepEqual(await h.sw.evaluate(() => (globalThis as any).__webop.linkState()), { connected: true, waitingForWindow: false });
+});
