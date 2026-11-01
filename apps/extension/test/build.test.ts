@@ -18,7 +18,9 @@ test("prod build has no test hook", async () => {
   const out = await buildTo([]);
   try {
     for (const f of ["sw.js", "overlay.js", "ax.js", "options.js"]) {
-      assert.ok(!(await readFile(join(out, f), "utf8")).includes("__webop"), `${f} contains __webop`);
+      const text = await readFile(join(out, f), "utf8");
+      assert.ok(!text.includes("__webop"), `${f} contains __webop`);
+      assert.ok(!text.includes("failNextCapture") && !text.includes("injected fault"), `${f} contains the capture fault hook`);
     }
   } finally {
     await rm(out, { recursive: true, force: true });

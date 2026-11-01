@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>corner:0</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  /* Sits exactly where the overlay's stop button is drawn (88x36, 16px from the right and bottom edges). */
+  #corner { position: fixed; right: 16px; bottom: 16px; width: 88px; height: 36px; padding: 0; }
+</style>
+</head>
+<body>
+<button id="corner">Corner</button>
+<script>
+  let n = 0;
+  document.getElementById("corner").addEventListener("click", () => { document.title = "corner:" + ++n; });
+</script>
+</body>
+</html>

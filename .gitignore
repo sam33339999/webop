@@ -7,3 +7,6 @@ node_modules/
 apps/extension/dist/
 apps/extension/dist-dev/
 apps/webop/dist/
+
+.DS_Store
+.claude/

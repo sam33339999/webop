@@ -14,7 +14,11 @@ agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop nativ
 
 ## 安裝順序
 
-先執行 `node apps/webop/dist/webop.mjs install` 註冊 Native Messaging host，再在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。細節見 [docs/agents/opencode.md](docs/agents/opencode.md)。
+先執行 `node apps/webop/dist/webop.mjs install` 註冊 Native Messaging host（會印出可直接貼進 opencode 的設定，已含 node 與 `webop.mjs` 的絕對路徑），再在 `chrome://extensions` 載入 `apps/extension/dist`。若順序相反，開啟擴充功能的 options 頁（或重新載入擴充功能）即可立即連線。要移除 host：`node apps/webop/dist/webop.mjs uninstall [--browser-dir <dir>]`。
+
+## 授權與停止
+
+agent 第一次操作某個網站時會跳出詢問視窗（拒絕／本次允許／永久允許），授權分 `read`、`act`（含 `read`）、`javascript` 三級；options 頁可管理永久授權、拒絕清單與 JavaScript 開關。操作期間可按頁面右下角的「停止」按鈕、工具列圖示（停止所有 session）或 debugger 資訊列的「取消」隨時中止。細節、錯誤碼與驗收清單見 [docs/agents/opencode.md](docs/agents/opencode.md)。
 
 ## 開發
 

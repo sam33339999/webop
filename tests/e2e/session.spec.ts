@@ -7,6 +7,8 @@ const opened: Launched[] = [];
 async function open() {
   const h = await launch();
   opened.push(h);
+  // These tests treat the second origin as a refused site (ask flows live in access.spec.ts).
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.deny": ["127.0.0.1"] }));
   return h;
 }
 after(async () => { for (const h of opened) await h.close(); });
@@ -91,7 +93,7 @@ test("tabs_create to non-allowlisted or non-web url is denied", async () => {
   const e = errOf(await call(sw, "tabs_create", { url: `${altUrl}/button.html` }));
   assert.equal(e.code, "permission_denied");
   assert.match(e.message, /127\.0\.0\.1/);
-  assert.match(e.message, /add it in webop options/);
+  assert.match(e.message, /deny list in webop options/);
   assert.equal(errOf(await call(sw, "tabs_create", { url: "chrome://version" })).code, "permission_denied");
   assert.equal(errOf(await call(sw, "tabs_create", { url: "about:blank" })).code, "permission_denied");
   assert.deepEqual(JSON.parse(textOf(await call(sw, "tabs_list", {}))), []);
@@ -277,4 +279,32 @@ test("closing a session hides the cursor and glow on its tabs", async () => {
   const after = await state();
   assert.equal(after.cursorOpacity, "0");
   assert.equal(after.glowOpacity, "0");
+});
+
+const overlayHosts = (page: import("@playwright/test").Page) =>
+  page.evaluate(() => [...document.documentElement.children].filter((e) => (e as HTMLElement).style.cssText.includes("2147483647")).length);
+
+test("t_foreign_tab_untouched: user-opened tabs get no overlay host", async () => {
+  const { sw, baseUrl, context } = await open();
+  await openForeignTab(sw, `${baseUrl}/button.html`);
+  const page = context.pages().find((p) => p.url() === `${baseUrl}/button.html`);
+  assert.ok(page);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(await overlayHosts(page), 0);
+});
+
+test("t_owned_tab_after_reload: read_page and ref click work, single overlay host", async () => {
+  const { sw, baseUrl, context } = await open();
+  const tab_id = await create(sw, `${baseUrl}/button.html`);
+  const page = context.pages().find((p) => p.url() === `${baseUrl}/button.html`);
+  assert.ok(page);
+  assert.equal(await overlayHosts(page), 1);
+  await page.reload();
+  const tree = textOf(await call(sw, "read_page", { tab_id, filter: "interactive" }));
+  const ref = /\[(ref_\d+)\]/.exec(tree)?.[1];
+  assert.ok(ref, tree);
+  await call(sw, "computer", { action: "screenshot", tab_id });
+  const clicked = await call(sw, "computer", { action: "left_click", tab_id, ref });
+  assert.ok("content" in clicked, "error" in clicked ? clicked.error.message : "");
+  assert.equal(await overlayHosts(page), 1);
 });

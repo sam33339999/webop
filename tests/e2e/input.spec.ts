@@ -132,7 +132,7 @@ test("click inside a cross-site iframe is denied and nothing reaches the frame",
     const r = await call(h.sw, "computer", { action, tab_id, coordinate });
     assert.ok("error" in r, action);
     assert.equal(r.error.code, "permission_denied", action);
-    assert.match(r.error.message, /cross-site frame \(127\.0\.0\.1\)/);
+    assert.match(r.error.message, /^Not performed: .*cross-site frame \(127\.0\.0\.1\)/);
   }
   const drag = await call(h.sw, "computer", { action: "left_click_drag", tab_id, start_coordinate: coordinate, coordinate: [coordinate[0] + 5, coordinate[1]] });
   assert.ok("error" in drag && drag.error.code === "permission_denied");
@@ -159,4 +159,62 @@ test("same-site iframe is allowed", async () => {
   const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
   assert.ok("content" in r, "error" in r ? r.error.message : "");
   assert.equal(await frame.evaluate(() => document.title), "clicked:true");
+});
+
+test("t_action_ok_screenshot_fails: a failed capture after a delivered click is not reported as an error", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const page = pageOf(h, h.baseUrl, "/button.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  await h.sw.evaluate(() => (globalThis as any).__webop.failNextCapture());
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("content" in r, "error" in r ? r.error.message : "");
+  assert.equal(r.content.length, 1);
+  const t = r.content[0];
+  assert.ok(t.type === "text");
+  assert.match(t.text, /^Action performed; screenshot failed: /);
+  assert.equal(await page.title(), "clicked:true");
+});
+
+test("t_action_ok_session_closed_during_capture: a delivered click whose session ended is an error, not success", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const page = pageOf(h, h.baseUrl, "/button.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  await h.sw.evaluate(() => (globalThis as any).__webop.failNextCapture({ closeSession: "test" }));
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("error" in r, "must not be reported as success");
+  assert.equal(r.error.code, "tab_not_in_session");
+  assert.match(r.error.message, /^The action may have been partially or fully performed: /);
+});
+
+test("t_afterload_zero_limit: limitMs <= 0 times out without calling start()", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const r = await h.sw.evaluate(async (id) => {
+    let started = false;
+    try {
+      await (globalThis as any).__webop.afterLoad(id, async () => { started = true; }, 0);
+      return { started, error: null };
+    } catch (e: any) {
+      return { started, error: { code: e.code, message: e.message } };
+    }
+  }, tab_id);
+  assert.equal(r.started, false);
+  assert.equal(r.error?.code, "timeout");
+  assert.match(r.error?.message ?? "", /^Not performed:/);
+});
+
+test("t_click_closes_tab_not_reported_as_not_performed", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/closer.html`);
+  const page = pageOf(h, h.baseUrl, "/closer.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("error" in r, "click that closes the tab ends in an error");
+  assert.ok(!r.error.message.includes("Not performed"), r.error.message);
+  assert.ok(r.error.message.startsWith("The action may have been partially or fully performed: "), r.error.message);
 });

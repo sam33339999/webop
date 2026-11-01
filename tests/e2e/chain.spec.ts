@@ -70,6 +70,7 @@ test("end to end: tabs_create → read_page → click by ref → screenshot", as
 
 test("end to end: non-allowlisted site → isError permission_denied", async () => {
   const { h, client } = await chain();
+  await h.sw.evaluate(() => chrome.storage.local.set({ "webop.deny": ["127.0.0.1"] }));
   const r = await client.callTool({ name: "browser_tabs_create", arguments: { url: `${h.altUrl}/button.html` } });
   assert.equal(r.isError, true);
   assert.match(textOf(r), /^permission_denied/);

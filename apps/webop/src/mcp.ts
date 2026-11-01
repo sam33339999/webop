@@ -9,12 +9,16 @@ import { readLines, writeLine } from "./ndjson.ts";
 import { logDir, runDir, socketPath } from "./paths.ts";
 import { TOOL_DEFS } from "./tool-schemas.ts";
 
+const MAX_EXTEND_MS = 600_000;
+
 type Outcome = { content: ContentBlock[] } | { error: { code: ErrorCode; message: string } };
 const fail = (code: ErrorCode, message: string): Outcome => ({ error: { code, message } });
 
 interface Conn {
   sock: net.Socket;
   pending: Map<string, (o: Outcome) => void>;
+  /** Restarts a pending call's timer with a longer allowance (the extension is waiting on the user). */
+  extend: Map<string, (ms: number) => void>;
 }
 
 function logLine(m: string): void {
@@ -69,6 +73,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
     if (conn === c) conn = null;
     const pend = [...c.pending.values()];
     c.pending.clear();
+    c.extend.clear();
     for (const f of pend) f(fail("not_connected", "Connection to webop host was lost"));
   }
 
@@ -84,7 +89,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
       );
     }
     const sock = net.createConnection(socketPath(profiles[0]!.profile_id, root));
-    const c: Conn = { sock, pending: new Map() };
+    const c: Conn = { sock, pending: new Map(), extend: new Map() };
     return new Promise<Conn | Outcome>((resolve) => {
       let opened = false;
       const unavailable = (m: string) => resolve(fail("not_connected", m));
@@ -120,6 +125,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
           const f = c.pending.get(msg.id);
           if (!f) return;
           c.pending.delete(msg.id);
+          c.extend.delete(msg.id);
           const err = msg.error as Record<string, unknown> | null | undefined;
           if (Array.isArray(msg.content)) {
             f({ content: msg.content as ContentBlock[] });
@@ -128,6 +134,13 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
           } else {
             f(fail("internal", "malformed host response"));
           }
+        } else if (msg.type === "pending") {
+          const n = msg.extend_ms;
+          if (typeof msg.id !== "string" || typeof n !== "number" || !Number.isInteger(n) || n <= 0) {
+            logLine("ignored malformed pending");
+            return;
+          }
+          c.extend.get(msg.id)?.(n);
         }
       };
       sock.once("connect", () => {
@@ -152,26 +165,45 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number })
     return connecting;
   }
 
-  async function forward(tool: ToolName, args: Record<string, unknown>): Promise<Outcome> {
+  async function forward(tool: ToolName, args: Record<string, unknown>, signal?: AbortSignal): Promise<Outcome> {
+    if (signal?.aborted) return fail("internal", "Tool call was cancelled by the client");
     const c = await getConn();
     if (!("sock" in c)) return c;
+    if (signal?.aborted) return fail("internal", "Tool call was cancelled by the client");
     const id = String(nextId++);
     return new Promise<Outcome>((resolve) => {
-      const timer = setTimeout(() => {
-        c.pending.delete(id);
-        resolve(fail("timeout", `Tool call timed out after ${callTimeoutMs} ms`));
-      }, callTimeoutMs);
-      c.pending.set(id, (o) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const cleanup = (): void => {
         clearTimeout(timer);
+        c.pending.delete(id);
+        c.extend.delete(id);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const giveUp = (o: Outcome): void => {
+        cleanup();
+        writeLine(c.sock, { type: "cancel", id } satisfies McpToHost);
+        resolve(o);
+      };
+      const startedAt = Date.now();
+      const arm = (ms: number): void => {
+        clearTimeout(timer);
+        timer = setTimeout(() => giveUp(fail("timeout", `Tool call timed out after ${Date.now() - startedAt} ms`)), ms);
+      };
+      const onAbort = (): void => giveUp(fail("internal", "Tool call was cancelled by the client"));
+      arm(callTimeoutMs);
+      c.pending.set(id, (o) => {
+        cleanup();
         resolve(o);
       });
+      c.extend.set(id, (ms) => arm(Math.min(ms, MAX_EXTEND_MS) + callTimeoutMs));
+      signal?.addEventListener("abort", onAbort, { once: true });
       writeLine(c.sock, { type: "call", id, tool, args } satisfies McpToHost);
     });
   }
 
   for (const def of TOOL_DEFS) {
-    server.registerTool(def.name, { description: def.description, inputSchema: def.shape }, async (args) => {
-      const o = await forward(def.tool, args as Record<string, unknown>);
+    server.registerTool(def.name, { description: def.description, inputSchema: def.shape }, async (args, extra) => {
+      const o = await forward(def.tool, args as Record<string, unknown>, extra.signal);
       if ("error" in o) {
         return { isError: true, content: [{ type: "text", text: `${o.error.code}: ${o.error.message}` }] };
       }

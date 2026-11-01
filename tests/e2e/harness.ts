@@ -56,7 +56,7 @@ export async function launch(opts: { nativeHost?: boolean; deviceScaleFactor?: n
     ],
   });
   const sw = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
-  await sw.evaluate(() => chrome.storage.local.set({ "webop.allow": ["localhost"] }));
+  await sw.evaluate(() => chrome.storage.local.set({ "webop.grants": { localhost: ["act"] } }));
   return {
     context,
     sw,

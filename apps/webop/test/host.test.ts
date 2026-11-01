@@ -211,3 +211,68 @@ test("exit with descriptor pid not ours leaves files untouched", async () => {
   t.input.end(); await t.done;
   assert.equal(fs.existsSync(descriptorPath("p1", t.root)), true);
 });
+
+test("t_oversize_call_rejected: >1 MB tool_call is not forwarded and errors back", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(t.sock));
+  const { c, msgs } = await t.connect();
+  writeLine(c, { type: "open", client_name: "t" });
+  await until(() => msgs.length > 0);
+  writeLine(c, { type: "call", id: "big", tool: "browser_computer", args: { text: "x".repeat(1_100_000) } });
+  await until(() => msgs.some((m) => m.id === "big"));
+  const res = msgs.find((m) => m.id === "big");
+  assert.equal(res.type, "result");
+  assert.equal(res.error.code, "invalid_args");
+  assert.equal(res.error.message, "Tool arguments exceed the 1 MB Native Messaging limit.");
+  await sleep(50);
+  assert.equal(t.fromHost.some((m) => m.type === "tool_call" && m.id === "big"), false);
+  c.destroy(); t.input.end(); await t.done;
+});
+
+test("t_output_epipe_logged: output error is logged, host does not crash", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wh-"));
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const done = runHost({ input, output, root });
+  output.destroy();
+  output.emit("error", new Error("write EPIPE"));
+  const logFile = path.join(root, "log", "host.log");
+  await until(() => fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").includes("EPIPE"));
+  input.end(); await done;
+});
+
+test("t_pending_relayed: tool_pending reaches only the owning mcp socket; invalid extend_ms dropped", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  const b = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "A" });
+  writeLine(b.c, { type: "open", client_name: "B" });
+  await until(() => a.msgs.length === 1 && b.msgs.length === 1);
+  const sid = a.msgs[0].session_id;
+  for (const bad of [0, -5, 1.5, 600_001, "100", null]) {
+    t.input.write(encodeFrame({ type: "tool_pending", id: "1", session_id: sid, extend_ms: bad }));
+  }
+  t.input.write(encodeFrame({ type: "tool_pending", id: "1", session_id: sid, extend_ms: 600_000 }));
+  await until(() => a.msgs.length === 2);
+  assert.deepEqual(a.msgs[1], { type: "pending", id: "1", extend_ms: 600_000 });
+  await sleep(50);
+  assert.equal(a.msgs.length, 2);
+  assert.equal(b.msgs.length, 1);
+  a.c.destroy(); b.c.destroy(); t.input.end(); await t.done;
+});
+
+test("cancel from mcp is relayed to the extension as tool_cancel with its session_id", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  writeLine(a.c, { type: "open", client_name: "A" });
+  await until(() => a.msgs.length === 1);
+  writeLine(a.c, { type: "cancel", id: "7" });
+  await until(() => t.fromHost.some((m) => m.type === "tool_cancel"));
+  assert.deepEqual(t.fromHost.find((m) => m.type === "tool_cancel"), { type: "tool_cancel", id: "7", session_id: a.msgs[0].session_id });
+  a.c.destroy(); t.input.end(); await t.done;
+});

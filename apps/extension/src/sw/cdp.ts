@@ -13,15 +13,23 @@ const PROTOCOL_VERSION = "1.3";
 const ATTACH_TIMEOUT_MS = 5000;
 
 const attached = new Set<number>();
+/** Tabs attached by us whose first capture has not yet waited for the viewport to settle (the debugging infobar resizes the page). */
+const unsettled = new Set<number>();
 const attaching = new Map<number, Promise<void>>();
 const pending = new Map<number, Set<(e: CdpError) => void>>();
 const lastDetach = new Map<number, { reason: string; at: number }>();
 const detachWaiters = new Map<number, Set<() => void>>();
 const CANCEL_GRACE_MS = 100;
+/** Tabs a stop just released: nothing may re-attach to them until a call that started after the stop takes its turn. */
+const halted = new Set<number>();
+/** Tabs whose debugger bar the user cancelled while no command was waiting; the next call on them says so once. */
+const detachNotices = new Map<number, number>();
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
 export const timeouts = { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 2_000 };
 const inputCounts = new Map<number, number>();
+/** Dev-only fault injection (see the `__webop` hook): makes the next `Page.captureScreenshot` fail once. */
+export const devFaults: { failNextCapture: boolean; beforeFail?: () => Promise<void> } = { failNextCapture: false };
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
 
 let mayControl: (tabId: number) => boolean = () => true;
@@ -29,6 +37,11 @@ let mayControl: (tabId: number) => boolean = () => true;
 /** How many `Input.*` commands have been sent to the tab; lets callers tell whether an action began reaching the page. */
 export function inputsSentTo(tabId: number): number {
   return inputCounts.get(tabId) ?? 0;
+}
+
+/** Marks a page-changing action (such as a scroll) as begun, so later failures read as "may have happened". */
+export function notePageChange(tabId: number): void {
+  inputCounts.set(tabId, inputsSentTo(tabId) + 1);
 }
 
 /** Registers the check that stops a closed session's in-flight work from re-attaching to its former tabs. */
@@ -40,6 +53,32 @@ function sessionClosed(): CdpError {
   return new CdpError("tab_not_in_session", "This tab is no longer controlled by the session (the session ended or the tab was closed).");
 }
 
+// inputCounts is deliberately kept: a tab closing after its first input must still read as "input went out".
+chrome.tabs.onRemoved.addListener((tabId) => { halted.delete(tabId); detachNotices.delete(tabId); });
+
+export function stoppedError(): CdpError {
+  return new CdpError("stopped_by_user", "Not performed: the user pressed stop.");
+}
+
+/** After a stop: refuse to attach (and so to send anything) to the tab until `resumeTab`. */
+export function haltTab(tabId: number): void {
+  halted.add(tabId);
+}
+export function resumeTab(tabId: number): void {
+  halted.delete(tabId);
+}
+
+/** True once after the user cancelled the debugger bar on this tab and no running command had been told yet. */
+export function takeDetachNotice(tabId: number): boolean {
+  return detachNotices.delete(tabId);
+}
+
+/** A call that ran while the user cancelled has told its caller already; drop a notice that arose since `since`. */
+export function dropDetachNoticeSince(tabId: number, since: number): void {
+  const at = detachNotices.get(tabId);
+  if (at !== undefined && at >= since) detachNotices.delete(tabId);
+}
+
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
   detachListeners.push(cb);
 }
@@ -47,9 +86,11 @@ export function onDetached(cb: (tabId: number, reason: string) => void): void {
 /** Single place that reacts to a debugger detach, whether it came from Chrome or from the dev hook. */
 export function handleDetach(tabId: number, reason: string): void {
   attached.delete(tabId);
+  unsettled.delete(tabId);
   lastDetach.set(tabId, { reason, at: Date.now() });
   for (const wake of [...(detachWaiters.get(tabId) ?? [])]) wake();
   const waiting = pending.get(tabId);
+  if (reason === "canceled_by_user" && !(waiting && waiting.size > 0)) detachNotices.set(tabId, Date.now());
   if (waiting && reason === "canceled_by_user") {
     for (const reject of [...waiting]) {
       reject(new CdpError("detached_by_user", "The user closed the debugging session for this tab. Retry to re-attach."));
@@ -97,11 +138,18 @@ async function doAttach(tabId: number): Promise<void> {
     clearTimeout(timer);
   }
   attached.add(tabId);
+  unsettled.add(tabId);
   lastDetach.delete(tabId);
+}
+
+/** True once per fresh attach (not for a re-adopted attachment): the caller should let the viewport settle before capturing. */
+export function takeFreshAttach(tabId: number): boolean {
+  return unsettled.delete(tabId);
 }
 
 export async function attach(tabId: number): Promise<void> {
   if (!mayControl(tabId)) throw sessionClosed();
+  if (halted.has(tabId)) throw stoppedError();
   if (attached.has(tabId)) return;
   let inflight = attaching.get(tabId);
   if (!inflight) {
@@ -140,6 +188,12 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
   const aborted = new Promise<never>((_, reject) => { abort = reject; });
   set.add(abort);
   if (method.startsWith("Input.")) inputCounts.set(tabId, inputsSentTo(tabId) + 1);
+  if (__DEV__ && method === "Page.captureScreenshot" && devFaults.failNextCapture) {
+    devFaults.failNextCapture = false;
+    await devFaults.beforeFail?.();
+    set.delete(abort);
+    throw new CdpError("internal", "Page.captureScreenshot failed: injected fault");
+  }
   const startedAt = Date.now();
   const canceledSince = () => {
     const d = lastDetach.get(tabId);

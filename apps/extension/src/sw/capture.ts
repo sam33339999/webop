@@ -1,10 +1,14 @@
 import type { ContentBlock } from "@webop/core/protocol";
 import type { ScreenshotContext } from "@webop/core/coords";
 import { planCapture } from "@webop/core/budget";
-import { attach, send } from "./cdp.ts";
+import { attach, send, takeFreshAttach } from "./cdp.ts";
 
 const JPEG_QUALITY = 75;
 const OVERLAY_SETTLE_MS = 50;
+/** After a fresh debugger attach the infobar resizes the page; wait until innerWidth/innerHeight stay put. */
+const VIEWPORT_POLL_MS = 50;
+const VIEWPORT_STABLE_MS = 200;
+const VIEWPORT_SETTLE_MAX_MS = 1500;
 
 const contexts = new Map<number, ScreenshotContext>();
 let hideOverlay: (tabId: number, hidden: boolean) => Promise<void> = async () => {};
@@ -16,8 +20,24 @@ let hideOverlay: (tabId: number, hidden: boolean) => Promise<void> = async () =>
  */
 export const hiderLog: Array<{ tabId: number; hidden?: boolean; at?: "before" | "after" }> = [];
 
-export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<void>): void {
+let hideStopButton: (tabId: number, hidden: boolean) => Promise<void> = async () => {};
+
+export function setOverlayHider(fn: (tabId: number, hidden: boolean) => Promise<void>, stopButton?: (tabId: number, hidden: boolean) => Promise<void>): void {
   hideOverlay = fn;
+  if (stopButton) hideStopButton = stopButton;
+}
+
+/**
+ * Runs `fn` with the stop button hidden: the agent's own input must never land on it. The glow and the phantom cursor
+ * stay visible so the user sees each input as it happens. Restored afterwards even when `fn` fails.
+ */
+export async function withStopButtonHidden<T>(tabId: number, fn: () => Promise<T>): Promise<T> {
+  await hideStopButton(tabId, true);
+  try {
+    return await fn();
+  } finally {
+    await hideStopButton(tabId, false);
+  }
 }
 
 export function getContext(tabId: number): ScreenshotContext | undefined {
@@ -41,8 +61,24 @@ async function probe(tabId: number): Promise<PageProbe> {
   return r.result.value;
 }
 
-export async function screenshot(tabId: number): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
+async function waitForStableViewport(tabId: number): Promise<void> {
+  const start = Date.now();
+  let last = "";
+  let since = start;
+  for (;;) {
+    const p = await probe(tabId);
+    const now = Date.now();
+    const size = `${p.width}x${p.height}`;
+    if (size !== last) { last = size; since = now; }
+    if (now - since >= VIEWPORT_STABLE_MS || now - start >= VIEWPORT_SETTLE_MAX_MS) return;
+    await new Promise((resolve) => setTimeout(resolve, VIEWPORT_POLL_MS));
+  }
+}
+
+/** `store: false` takes a picture for the user's eyes (permission prompt) without replacing the context the agent's coordinates are mapped with. */
+export async function screenshot(tabId: number, opts: { store?: boolean } = {}): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   await attach(tabId);
+  if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
   if (__DEV__) hiderLog.push({ tabId, hidden: true });
   await hideOverlay(tabId, true);
@@ -73,7 +109,7 @@ export async function screenshot(tabId: number): Promise<{ block: ContentBlock; 
       screenshotWidth: outWidth,
       screenshotHeight: outHeight,
     };
-    contexts.set(tabId, ctx);
+    if (opts.store !== false) contexts.set(tabId, ctx);
     return { block: { type: "image", data, mimeType: "image/jpeg" }, ctx };
   } finally {
     if (__DEV__) hiderLog.push({ tabId, hidden: false });
