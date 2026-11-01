@@ -28,26 +28,39 @@ webop 讓 agent 透過 MCP（stdio）操作你日常 Chrome 中「你已授權�
 fnm use 26
 pnpm install
 pnpm -r build
+pnpm build:sea        # 產生單一執行檔 apps/webop/dist/webop（需 Node 26）
+apps/webop/dist/webop --version
 ```
+
+`apps/webop/dist/webop` 是單一執行檔（Node SEA），不依賴系統上的 node；以下用 `webop` 代稱它。
 
 **順序很重要：先註冊 host，再載入擴充功能。**
 
 1. 註冊 Native Messaging host（這一步必須在載入擴充功能之前）：
 
    ```bash
-   node apps/webop/dist/webop.mjs install
+   apps/webop/dist/webop install
    ```
 
-   指令會印出 extension id、manifest 與 wrapper 路徑，以及一段可直接貼上的 opencode 設定（已填入 node 與 `webop.mjs` 的絕對路徑）；把它貼進 `opencode.json` 即可，見下方「opencode 設定」。（測試用途可加 `--browser-dir <dir>` 指定寫入目錄。）
-   搬移專案目錄、或在別處重新 build 之後，必須重新執行一次 `webop install`，host 才會指向新的位置。
+   指令會印出 extension id、manifest 與 wrapper 路徑、一段可直接貼上的 opencode 設定，以及給 grok 的 `grok mcp add` 指令（路徑都已填好）；把設定貼進 `opencode.json` 即可，見下方「opencode 設定」。（測試用途可加 `--browser-dir <dir>` 指定寫入目錄。）
+   搬移專案目錄、或重新 build 到別處之後，必須重新執行一次 `webop install`，host 才會指向新的位置。從單一執行檔執行 install 時，包裝腳本只會執行它自己，不再寫死某個 node 路徑。
+   （也可以用 `node apps/webop/dist/webop.mjs install`，但包裝腳本會綁定當下那個 node，換 node 版本後就會壞掉。）
 2. 開啟 Chrome 的 `chrome://extensions`，啟用「開發人員模式」，點「載入未封裝項目」，選擇 `apps/extension/dist`。
    若你是先載入擴充功能、後執行 `webop install`：開啟擴充功能的 options 頁（或在 `chrome://extensions` 重新載入擴充功能），擴充功能就會立刻重新連線；否則可能要重啟 Chrome 才連得上。
 3. 授權不必事先設定：agent 第一次碰到某個網站時，webop 會跳出詢問視窗（見下方「授權」）。
 
+安裝完成、或之後連不上時，先跑：
+
+```bash
+apps/webop/dist/webop doctor
+```
+
+它會逐項印出 `ok`／`warn`／`FAIL`：host manifest、包裝腳本與它要執行的檔案是否存在、哪些 profile 在線（含 session 數與擴充版本）、webop 與擴充的版本是否一致。有 `FAIL` 時 exit code 為 1，每項都附修正建議。
+
 要移除 Native Messaging host：
 
 ```bash
-node apps/webop/dist/webop.mjs uninstall
+apps/webop/dist/webop uninstall
 ```
 
 同樣可加 `--browser-dir <dir>`（需與 `install` 時一致）。指令會刪除 manifest 與 wrapper。
@@ -155,14 +168,14 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 
 ## opencode 設定
 
-直接貼上 `webop install` 印出的設定即可（路徑已填好）。若要手動撰寫，在 `opencode.json`（opencode 1.19 格式）加入，並把 `<node 絕對路徑>` 與 `<repo>` 換成實際的絕對路徑：
+直接貼上 `webop install` 印出的設定即可（路徑已填好）。若要手動撰寫，在 `opencode.json`（opencode 1.19 格式）加入，並把 `<repo>` 換成實際的絕對路徑：
 
 ```json
 {
   "mcp": {
     "webop": {
       "type": "local",
-      "command": ["<node 絕對路徑>", "<repo>/apps/webop/dist/webop.mjs", "mcp"],
+      "command": ["<repo>/apps/webop/dist/webop", "mcp"],
       "enabled": true
     }
   }
@@ -172,7 +185,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 可在 `command` 陣列末尾加上 `"--profile", "<名稱或 id>"` 釘住 profile，或加上截圖大小參數（見「截圖大小與 zoom」），例如：
 
 ```json
-"command": ["<node 絕對路徑>", "<repo>/apps/webop/dist/webop.mjs", "mcp", "--profile", "Work", "--image-max-px", "1024"]
+"command": ["<repo>/apps/webop/dist/webop", "mcp", "--profile", "Work", "--image-max-px", "1024"]
 ```
 
 ## 系統提示範本
