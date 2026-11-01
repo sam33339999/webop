@@ -8,6 +8,10 @@
 
 版本規則：里程碑升 minor（M5 → 0.5.0）；里程碑內的修正與小功能升 patch（0.5.1、0.5.2…）。
 
+## 0.6.1 — 2026-11-01
+
+- `pnpm build:sea` 在 Node 26 以前的版本執行時，直接說明要先 `fnm use 26`，而不是丟出 `bad option: --build-sea`。
+
 ## 0.6.0 — 2026-11-01（M6）
 
 - 單一執行檔：`pnpm build:sea` 產生 `apps/webop/dist/webop`（Node SEA，macOS ad-hoc 簽署）。從它執行 `webop install`，包裝腳本只執行它自己，不再綁定某個 node 路徑。
