@@ -32,7 +32,7 @@ grok mcp add webop /path/to/webop -- mcp --profile Work --image-max-px 1024
 
 可以。兩者各自是一個 session、各有一個分頁群組，互不干擾；細節見 [README.md](README.md#同時使用多個-agent)。
 
-## 待手動驗收確認
+## grok 的 session 與名稱（2026-11-02 實測，grok 1.0.70）
 
-- **grok 自報的 client 名稱**（決定分頁群組標題 `webop · <名稱>` 與詢問視窗上顯示的 agent）：驗收時記錄實際值。
-- **session 的生命週期**：grok 有常駐的 leader 程序（`~/.grok/leader.sock`）。若 MCP server 由 leader 持有，只重開 grok 介面可能不會結束 webop 的 session（「本次允許」不會失效），情況類似 opencode 的 `opencode serve`。驗收時確認，並把結論與「如何完整結束」寫回這裡。
+- **名稱**：grok 握手時自報 `grok-shell-<MCP server 名稱>`。用 `grok mcp add webop …` 註冊時是 `grok-shell-webop`，所以詢問視窗顯示 `grok-shell-webop`，分頁群組標題是 `webop · grok-shell-webop`。
+- **session 生命週期**：每個 grok 程序（含 `grok -p` 的每一次執行）都自己啟動一個 `webop mcp`，不經過常駐的 leader。所以 grok 結束時 webop 的 session 也跟著結束，「本次允許」隨之失效，下一次執行會重新詢問。這跟 opencode 不同，opencode 要停掉 `opencode serve` 才會結束 session。

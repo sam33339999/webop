@@ -1,4 +1,4 @@
-import { devEvents, devFaults, handleDetach, send, timeouts } from "./cdp.ts";
+import { devEvents, devFaults, devSent, handleDetach, send, timeouts } from "./cdp.ts";
 import { getContext, hiderLog, setOverlayHider } from "./capture.ts";
 import { sendWithInject } from "./inject.ts";
 import { afterLoad, devHooks, dispatch } from "./tools.ts";
@@ -88,5 +88,5 @@ if (__DEV__) {
     const id = opts?.closeSession;
     devFaults.beforeFail = id === undefined ? undefined : () => closeSession(id);
   };
-  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, devEvents, adoptTab, openSession, stopEpoch, stopSession, sessionDevHooks, actionClicked: onActionClicked, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks, nativeDevHooks, onWindowClosed, onWindowOpened, linkState };
+  (globalThis as Record<string, unknown>).__webop = { askInCall, cancelCall, setPendingSink, setTimeouts, failNextCapture, afterLoad, dispatch, getContext, simulateDetach, send, hiderLog, hiderStats, devEvents, adoptTab, openSession, stopEpoch, stopSession, sessionDevHooks, actionClicked: onActionClicked, closeSession, ask, promptTimeouts, migrateAllowList, rearmReady, requireAccess, grant, devHooks, devSent, nativeDevHooks, onWindowClosed, onWindowOpened, linkState };
 }

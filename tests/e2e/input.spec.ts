@@ -218,3 +218,23 @@ test("t_click_closes_tab_not_reported_as_not_performed", async () => {
   assert.ok(!r.error.message.includes("Not performed"), r.error.message);
   assert.ok(r.error.message.startsWith("The action may have been partially or fully performed: "), r.error.message);
 });
+
+test("t_click_background_tab_wakes_it_first: input to a background tab is preceded by focus emulation", async () => {
+  const h = await open();
+  // tabs_create opens the tab in the background (active: false), like an agent does.
+  const created = await call(h.sw, "tabs_create", { url: `${h.baseUrl}/button.html` });
+  assert.ok("content" in created, JSON.stringify(created));
+  const tab_id = JSON.parse((created.content[0] as { text: string }).text).tab_id as number;
+  // Headless Chromium renders background tabs (visibilityState stays "visible"), so the hidden-tab stall itself is
+  // only reproducible in a real browser; this pins the step that prevents it.
+  const tree = await call(h.sw, "read_page", { tab_id, filter: "interactive" });
+  const ref = /\[(ref_\d+)\]/.exec("content" in tree ? (tree.content[0] as { text: string }).text : "")![1]!;
+  await h.sw.evaluate(() => { (globalThis as any).__webop.devSent.length = 0; });
+  assert.ok("content" in await call(h.sw, "computer", { action: "left_click", tab_id, ref }));
+  const sent = (await h.sw.evaluate(() => [...(globalThis as any).__webop.devSent])) as string[];
+  const mine = sent.filter((s) => s.startsWith(`${tab_id} `)).map((s) => s.slice(String(tab_id).length + 1));
+  const firstInput = mine.findIndex((m) => m.startsWith("Input."));
+  const wake = mine.indexOf("Emulation.setFocusEmulationEnabled");
+  assert.ok(firstInput >= 0, mine.join(", "));
+  assert.ok(wake >= 0 && wake < firstInput, `focus emulation must come before the first input: ${mine.join(", ")}`);
+});

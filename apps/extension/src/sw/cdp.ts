@@ -29,6 +29,8 @@ const dialogsOpen = new Set<number>();
 const dialogWaiters = new Map<number, Set<() => void>>();
 /** Dev-only trace of raw CDP events (proves whether the debugger delivers them at all). */
 export const devEvents: string[] = [];
+/** Dev-only: CDP methods sent, in order, as `<tabId> <method>` (capped). */
+export const devSent: string[] = [];
 
 /** Prod defaults; a page blocked by a dialog or long script must not hold a tab's queue (or land late actions). */
 export const timeouts = { cdpSendMs: 20_000, inputSendMs: 3_000, callDeadlineMs: 50_000, probeMs: 2_000 };
@@ -238,6 +240,7 @@ const DIALOG_SAFE: ReadonlySet<string> = new Set([
 
 export async function send<T = unknown>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
   await attach(tabId);
+  if (__DEV__ && devSent.length < 2000) devSent.push(`${tabId} ${method}`);
   await dialogGate(tabId, method);
   let set = pending.get(tabId);
   if (!set) pending.set(tabId, (set = new Set()));
