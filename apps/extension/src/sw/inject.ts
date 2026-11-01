@@ -2,9 +2,9 @@ import { CdpError } from "./cdp.ts";
 
 /** Content scripts are injected only into tabs a session owns; the manifest declares none. */
 
-const SCRIPTS = ["ax.js", "overlay.js"];
+const SCRIPTS = ["ax.js", "text.js", "overlay.js"];
 
-/** Injects the AX and overlay scripts into the tab's top frame; both guard against running twice per document. */
+/** Injects the AX, page-text and overlay scripts into the tab's top frame; both guard against running twice per document. */
 export async function ensureInjected(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: SCRIPTS });
 }

@@ -588,6 +588,10 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => readPage(call, ctx));
   }
+  if (call.tool === "get_page_text") {
+    const tabId = tabIdOf(call.args);
+    return withTab(tabId, ctx, () => pageText(call, ctx));
+  }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
 
@@ -612,6 +616,23 @@ async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   return { content: [{ type: "text", text: r.text }] };
 }
 
+async function pageText(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  await assertOwned(call.session_id, tabId);
+  await requireReadable(call.session_id, tabId, ctx);
+  const { max_chars } = call.args;
+  if (max_chars !== undefined && (typeof max_chars !== "number" || !Number.isFinite(max_chars) || max_chars <= 0)) invalid("max_chars must be a positive number.");
+  void showGlow(call.session_id, tabId, ctx.stopped);
+  const r = await askContent<{ text: string; truncated: boolean } | undefined>(tabId, { type: "webop:page_text", max_chars: max_chars ?? 50000 });
+  if (!r || typeof r.text !== "string") throw new CdpError("internal", "Page content script returned no reply.");
+  await assertLive(call.session_id);
+  // The text is handed back only if the tab is still on a site this session may read.
+  const url = await recheck(call.session_id, tabId, false, ctx);
+  const title = await chrome.tabs.get(tabId).then((t) => t.title ?? "", () => "");
+  const body = r.truncated ? `${r.text}\n…(truncated)` : r.text;
+  return { content: [{ type: "text", text: `Title: ${title}\nURL: ${url}\n\n${body}` }] };
+}
+
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
   const { ctx, close } = openCallContext(call.session_id, call.id);
@@ -626,7 +647,7 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
     // A stop that landed while the call was finishing: the result is not handed back.
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
-      const readOnly = call.tool === "read_page" || call.tool === "tabs_list" || (call.tool === "computer" && call.args.action === "screenshot");
+      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" || (call.tool === "computer" && call.args.action === "screenshot");
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }
     return { ...base, ...outcome };

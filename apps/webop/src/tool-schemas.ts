@@ -52,6 +52,15 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    tool: "get_page_text",
+    name: "browser_get_page_text",
+    description:
+      "Read the main text of the page as plain text (title, URL, then the main content without navigation, headers or footers). " +
+      "Prefer this over browser_read_page when you only need to read. max_chars caps the text (default 50000)." +
+      SAFETY,
+    shape: { tab_id: z.number(), max_chars: z.number().optional() },
+  },
+  {
     tool: "computer",
     name: "browser_computer",
     description:
