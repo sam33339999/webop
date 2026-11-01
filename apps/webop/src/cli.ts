@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
-import { extensionIdFromKey } from "@webop/core/extension-id";
+import { isSea } from "node:sea";
+import { extensionId } from "./extension-id.ts";
 import { runHost } from "./host.ts";
 import { install, uninstall } from "./install.ts";
 import { runMcp } from "./mcp.ts";
@@ -22,8 +21,7 @@ if (cmd === "--version" || cmd === "-v" || cmd === "version") {
     }
     browserDirs.push(rest[++i]!);
   }
-  const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../extension/manifest.json", import.meta.url)), "utf8"));
-  const checks = await doctor({ browserDirs: browserDirs.length > 0 ? browserDirs : undefined, extensionId: await extensionIdFromKey(manifest.key) });
+  const checks = await doctor({ browserDirs: browserDirs.length > 0 ? browserDirs : undefined, extensionId: await extensionId() });
   process.stdout.write(`webop ${VERSION}\n${formatChecks(checks)}\n`);
   process.exit(checks.some((c) => c.level === "FAIL") ? 1 : 0);
 } else if (cmd === "native-host") {
@@ -44,14 +42,15 @@ if (cmd === "--version" || cmd === "-v" || cmd === "version") {
     process.stderr.write("usage: webop install [--browser-dir <dir>]\n");
     process.exit(2);
   }
-  // Development install: this script is dist/webop.mjs, the manifest sits in the sibling extension app.
-  const manifest = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../extension/manifest.json", import.meta.url)), "utf8"));
-  const extensionId = await extensionIdFromKey(manifest.key);
-  const scriptPath = fileURLToPath(import.meta.url);
-  const out = install({ browserDir, extensionId, webopCommand: [process.execPath, scriptPath] });
-  const commandJson = [process.execPath, scriptPath, "mcp"].map((x) => JSON.stringify(x)).join(", ");
+  // The single executable runs itself; the script build runs under the node that launched it.
+  const webopCommand = isSea() ? [process.execPath] : [process.execPath, process.argv[1]!];
+  const id = await extensionId();
+  const out = install({ browserDir, extensionId: id, webopCommand });
+  const commandJson = [...webopCommand, "mcp"].map((x) => JSON.stringify(x)).join(", ");
   const opencode = `{\n  "mcp": {\n    "webop": {\n      "type": "local",\n      "command": [${commandJson}],\n      "enabled": true\n    }\n  }\n}`;
-  process.stdout.write(`webop ${VERSION}\nextension id: ${extensionId}\nmanifest: ${out.manifestPath}\nwrapper: ${out.wrapperPath}\n\nAdd this to your opencode config:\n${opencode}\n`);
+  const shQuote = (x: string) => (/^[\w@%+=:,./-]+$/.test(x) ? x : `'${x.replaceAll("'", `'\\''`)}'`);
+  const grok = `grok mcp add webop ${webopCommand.map(shQuote).join(" ")} -- mcp`;
+  process.stdout.write(`webop ${VERSION}\nextension id: ${id}\nmanifest: ${out.manifestPath}\nwrapper: ${out.wrapperPath}\n\nAdd this to your opencode config:\n${opencode}\n\nOr add it to grok:\n${grok}\n`);
   process.exit(0);
 } else if (cmd === "uninstall") {
   const i = rest.indexOf("--browser-dir");
