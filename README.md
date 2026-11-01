@@ -12,6 +12,7 @@ agent ⇄ `webop mcp`（stdio MCP）⇄ per-profile Unix socket ⇄ `webop nativ
 - 實作計畫：[M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md)、[M4](docs/superpowers/plans/2026-10-31-webop-m4.md)、[M5](docs/superpowers/plans/2026-10-31-webop-m5.md)
 - 接上 agent：[docs/agents/README.md](docs/agents/README.md)（[opencode](docs/agents/opencode.md)、[grok](docs/agents/grok.md)）
 - 手動驗收清單：[docs/acceptance/](docs/acceptance/)
+- 未來想做的功能：[docs/roadmap.md](docs/roadmap.md)
 
 ## 安裝順序
 
