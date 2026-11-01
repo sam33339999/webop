@@ -4,6 +4,13 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// `node --build-sea` exists from Node 25.5; an older node (e.g. a shell still on Node 24) fails with "bad option".
+const [major, minor] = process.versions.node.split(".").map(Number) as [number, number];
+if (major < 25 || (major === 25 && minor < 5)) {
+  process.stderr.write(`build:sea needs Node 26 (this is Node ${process.versions.node}). Run \`fnm use 26\` and try again.\n`);
+  process.exit(1);
+}
+
 const root = dirname(fileURLToPath(import.meta.url));
 const config = join(root, "dist", "sea-config.json");
 writeFileSync(config, JSON.stringify({
