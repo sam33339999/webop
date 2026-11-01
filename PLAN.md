@@ -228,7 +228,7 @@ host manifest **不是掛載到擴充底下**，而是登記在**瀏覽器**的�
 {
   "name": "com.anthropic.claude_code_browser_extension",
   "description": "Claude Code Browser Extension Native Host",
-  "path": "/Users/yaxin/.claude/chrome/chrome-native-host",
+  "path": "/Users/<user>/.claude/chrome/chrome-native-host",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/"
@@ -240,7 +240,7 @@ host manifest **不是掛載到擴充底下**，而是登記在**瀏覽器**的�
 
 ```sh
 #!/bin/sh
-exec /Users/yaxin/.local/bin/claude --chrome-native-host
+exec /Users/<user>/.local/bin/claude --chrome-native-host
 ```
 
 觀察到的做法，可直接沿用：
