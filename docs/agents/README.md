@@ -11,7 +11,7 @@ webop 用 stdio MCP 對外提供 `browser_*` 工具，任何能啟動本機 MCP 
 
 ## 同時使用多個 agent
 
-每個 agent（每個 `webop mcp` 程序）是一個 session，各自擁有一個分頁群組，標題是 `webop · <client 名稱>`，顏色依 session 不同。client 名稱由 agent 在 MCP 握手時自報（opencode 為 `opencode`）。
+每個 agent（每個 `webop mcp` 程序）是一個 session，各自擁有一個分頁群組，標題是 `webop · <client 名稱>`，顏色依 session 不同。client 名稱由 agent 在 MCP 握手時自報（opencode 為 `opencode`，grok 為 `grok-shell-webop`）。
 
 - 每個 agent 只能操作自己群組裡的分頁；動別人的分頁會得到 `tab_not_in_session`。
 - 「本次允許」只屬於按下時詢問的那個 agent；另一個 agent 第一次碰同一個網站仍會詢問。永久授權與拒絕清單則是整個 profile 共用。
