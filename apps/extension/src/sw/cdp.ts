@@ -39,6 +39,11 @@ export function inputsSentTo(tabId: number): number {
   return inputCounts.get(tabId) ?? 0;
 }
 
+/** Marks a page-changing action (such as a scroll) as begun, so later failures read as "may have happened". */
+export function notePageChange(tabId: number): void {
+  inputCounts.set(tabId, inputsSentTo(tabId) + 1);
+}
+
 /** Registers the check that stops a closed session's in-flight work from re-attaching to its former tabs. */
 export function setTabGuard(fn: (tabId: number) => boolean): void {
   mayControl = fn;
@@ -48,7 +53,8 @@ function sessionClosed(): CdpError {
   return new CdpError("tab_not_in_session", "This tab is no longer controlled by the session (the session ended or the tab was closed).");
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => { inputCounts.delete(tabId); halted.delete(tabId); detachNotices.delete(tabId); });
+// inputCounts is deliberately kept: a tab closing after its first input must still read as "input went out".
+chrome.tabs.onRemoved.addListener((tabId) => { halted.delete(tabId); detachNotices.delete(tabId); });
 
 export function stoppedError(): CdpError {
   return new CdpError("stopped_by_user", "Not performed: the user pressed stop.");

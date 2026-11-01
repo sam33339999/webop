@@ -133,7 +133,7 @@ agent 需要尚未擁有的等級時，Chrome 會跳出一個彈出視窗，顯�
 | `permission_denied` | 被拒絕：網站在拒絕清單、使用者在詢問視窗按了拒絕（或 60 秒未回答、關閉視窗），或 JavaScript 功能未開啟 |
 | `permission_required` | 讀取類操作遇到尚未詢問過的網站（例如分頁被導向別處）：已在背景詢問使用者，不回傳內容；允許後重試 |
 | `security_check_failed` | 送出輸入前的網站複查失敗（分頁在操作途中被導向另一個網站），輸入未送出 |
-| `stopped_by_user` | 使用者按了停止（頁內按鈕或工具列圖示）；session 仍連線，「本次允許」已收回。若訊息含「may have been partially or fully performed」，表示輸入已部分送出 |
+| `stopped_by_user` | 使用者按了停止（頁內按鈕或工具列圖示）；session 仍連線，「本次允許」已收回。若訊息含「may have been partially or fully performed」，表示輸入已部分送出；navigate／tabs_create 的「The navigation was started and may still complete…」「The tab was opened and …」同樣表示動作已發生。訊息開頭為「Not performed」才表示確定沒做 |
 | `stale_ref` | ref 已失效（頁面重新載入或 DOM 改變），請重新 `browser_read_page` |
 | `oob` | 座標超出截圖範圍 |
 | `invalid_args` | 參數不合法，包括 viewport 大小自上次截圖後改變（需重新截圖）|

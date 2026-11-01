@@ -1,6 +1,6 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, dropDetachNoticeSince, inputsSentTo, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
+import { CdpError, dropDetachNoticeSince, inputsSentTo, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, screenshot, withStopButtonHidden } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -152,6 +152,8 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
     case "hover": return hover(tabId, ...(await aim()));
     case "scroll_to": {
       if (args.ref === undefined) invalid("scroll_to requires ref.");
+      // scrollIntoView changes the page without any Input.*; count it as an action that began.
+      notePageChange(tabId);
       await refPoint(tabId, args.ref);
       await g.beforeInput();
       return;

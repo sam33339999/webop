@@ -206,3 +206,15 @@ test("t_afterload_zero_limit: limitMs <= 0 times out without calling start()", a
   assert.equal(r.error?.code, "timeout");
   assert.match(r.error?.message ?? "", /^Not performed:/);
 });
+
+test("t_click_closes_tab_not_reported_as_not_performed", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/closer.html`);
+  const page = pageOf(h, h.baseUrl, "/closer.html");
+  await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const coordinate = await centerOf(h, page, tab_id, "#btn");
+  const r = await call(h.sw, "computer", { action: "left_click", tab_id, coordinate });
+  assert.ok("error" in r, "click that closes the tab ends in an error");
+  assert.ok(!r.error.message.includes("Not performed"), r.error.message);
+  assert.ok(r.error.message.startsWith("The action may have been partially or fully performed: "), r.error.message);
+});
