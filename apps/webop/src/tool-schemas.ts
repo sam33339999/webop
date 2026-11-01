@@ -75,12 +75,13 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "browser_computer",
     description:
       "Mouse, keyboard, scroll and screenshot actions on a tab. Coordinates are pixels in the full-resolution screenshot frame. " +
+      "zoom returns a close-up of region [x0, y0, x1, y1] (screenshot coordinates) without changing that frame. " +
       "Prefer ref from browser_read_page when available." +
       SAFETY,
     shape: {
       action: z.enum([
         "screenshot", "left_click", "right_click", "double_click", "hover",
-        "left_click_drag", "type", "key", "scroll", "scroll_to",
+        "left_click_drag", "type", "key", "scroll", "scroll_to", "zoom",
       ]),
       tab_id: z.number(),
       coordinate: z.tuple([z.number(), z.number()]).optional(),
@@ -90,6 +91,7 @@ export const TOOL_DEFS: ToolDef[] = [
       text: z.string().optional(),
       scroll_direction: z.enum(["up", "down", "left", "right"]).optional(),
       scroll_amount: z.number().optional(),
+      region: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
     },
   },
   {

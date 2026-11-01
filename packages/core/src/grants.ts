@@ -19,7 +19,7 @@ export function levelFor(tool: string, action?: string): Level | null {
     case "get_page_text":
       return "read";
     case "computer":
-      return action === "screenshot" ? "read" : "act";
+      return action === "screenshot" || action === "zoom" ? "read" : "act";
     case "form_input":
       return "act";
     case "tabs_list":

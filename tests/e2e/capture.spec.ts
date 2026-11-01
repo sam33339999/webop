@@ -130,3 +130,42 @@ test("background (active:false) session tab: hider resolves by reply, never by t
   const state = await sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "webop:overlay_state" }), tab_id);
   assert.equal(state.hidden, false);
 });
+
+const ctxOf = (h: Launched, tab_id: number): Promise<ScreenshotContext> =>
+  h.sw.evaluate((t) => (globalThis as any).__webop.getContext(t), tab_id);
+
+test("t_zoom_region: a zoom keeps the region's aspect ratio and leaves the coordinate frame alone", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  imageOf(await call(h.sw, "computer", { action: "screenshot", tab_id }));
+  const before = await ctxOf(h, tab_id);
+  const r = await call(h.sw, "computer", { action: "zoom", tab_id, region: [0, 0, 200, 100] });
+  const img = imageOf(r);
+  const { width, height } = jpegSize(Buffer.from(img.data, "base64"));
+  assert.ok(Math.abs(width - 2 * height) <= 2, `${width}x${height}`);
+  assert.ok("content" in r && r.content[0]?.type === "text" && /coordinates still use the last screenshot frame/.test(r.content[0].text));
+  assert.deepEqual(await ctxOf(h, tab_id), before);
+  // The old frame still maps clicks: the button sits in the middle of the page.
+  const page = h.context.pages().find((p) => p.url().endsWith("/button.html"))!;
+  const center = [Math.round(before.screenshotWidth / 2), Math.round(before.screenshotHeight / 2)];
+  assert.ok("content" in await call(h.sw, "computer", { action: "left_click", tab_id, coordinate: center }));
+  assert.equal(await page.title(), "clicked:true");
+});
+
+test("t_zoom_bad_region: inverted or empty regions are invalid_args, outside ones oob", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/button.html`);
+  const noCtx = await call(h.sw, "computer", { action: "zoom", tab_id, region: [0, 0, 10, 10] });
+  assert.ok("error" in noCtx && noCtx.error.code === "invalid_args");
+  imageOf(await call(h.sw, "computer", { action: "screenshot", tab_id }));
+  const before = await ctxOf(h, tab_id);
+  for (const region of [[100, 100, 50, 200], [10, 10, 10, 40]]) {
+    const r = await call(h.sw, "computer", { action: "zoom", tab_id, region });
+    assert.ok("error" in r && r.error.code === "invalid_args", JSON.stringify(r).slice(0, 200));
+  }
+  const oob = await call(h.sw, "computer", { action: "zoom", tab_id, region: [0, 0, 99999, 10] });
+  assert.ok("error" in oob && oob.error.code === "oob", JSON.stringify(oob).slice(0, 200));
+  const malformed = await call(h.sw, "computer", { action: "zoom", tab_id, region: [0, 0, 10] });
+  assert.ok("error" in malformed && malformed.error.code === "invalid_args");
+  assert.deepEqual(await ctxOf(h, tab_id), before);
+});

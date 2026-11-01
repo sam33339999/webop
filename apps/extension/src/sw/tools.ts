@@ -2,9 +2,9 @@ import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isDialogOpen, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
-import { getContext, screenshot, withStopButtonHidden } from "./capture.ts";
+import { getContext, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
-import { assertLive, assertOwned, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
+import { assertLive, assertOwned, budgetOf, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
 import { siteOf } from "@webop/core/domain";
 import { accessState, askInBackground, deniedError, isSiteReadable, requireAccess } from "./permissions.ts";
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
@@ -117,6 +117,17 @@ async function guardedTarget(tabId: number, args: Record<string, unknown>, coord
 /** The site re-read an input action passes right before input is sent (permission was settled before the page was touched). */
 interface InputGuard {
   beforeInput(): Promise<void>;
+}
+
+/** computer actions that only look at the page (read level, no input). */
+const READ_ACTIONS: ReadonlySet<string> = new Set(["screenshot", "zoom"]);
+
+function regionArg(args: Record<string, unknown>): [number, number, number, number] {
+  const v = args.region;
+  if (!Array.isArray(v) || v.length !== 4 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    invalid("region must be [x0, y0, x1, y1] in screenshot coordinates.");
+  }
+  return [v[0], v[1], v[2], v[3]];
 }
 
 const INPUT_ACTIONS: ReadonlySet<string> = new Set([
@@ -515,7 +526,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, async () => {
       await assertOwned(call.session_id, tabId);
-      const performed = action !== "screenshot";
+      const performed = !READ_ACTIONS.has(action);
       const first = await currentUrl(tabId);
       if (!performed) {
         await requireReadable(call.session_id, tabId, ctx);
@@ -542,6 +553,15 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         // The probe can take up to probeMs; a cancel or session end during it must stop us before any input.
         assertBeforeDeadline(ctx);
       }
+      const budget = await budgetOf(call.session_id);
+      if (action === "zoom") {
+        const region = regionArg(call.args);
+        const z = await zoom(tabId, region, budget);
+        await assertLive(call.session_id);
+        await recheck(call.session_id, tabId, false, ctx);
+        if (ctx.stopped()) throw stoppedError();
+        return { content: [{ type: "text", text: `Zoom of [${region.join(",")}] at ${z.width}x${z.height} px; coordinates still use the last screenshot frame.` }, z.block] };
+      }
       const inputsBefore = inputsSentTo(tabId);
       try {
         if (performed) {
@@ -556,7 +576,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         if (ctx.stopped()) throw stoppedError();
         let shot: Awaited<ReturnType<typeof screenshot>>;
         try {
-          shot = await screenshot(tabId);
+          shot = await screenshot(tabId, { budget });
         } catch (e) {
           // The action already went out in full; a failed capture must not read as a failed action.
           if (!performed || (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code))) throw e;
@@ -667,7 +687,7 @@ async function formInput(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const done = `Set ${kind} ${ref}.`;
   let shot: Awaited<ReturnType<typeof screenshot>>;
   try {
-    shot = await screenshot(tabId);
+    shot = await screenshot(tabId, { budget: await budgetOf(call.session_id) });
   } catch (e) {
     if (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code)) throw e;
     return { content: [{ type: "text", text: `${done} Screenshot failed: ${e instanceof Error ? e.message : String(e)}` }] };
@@ -709,7 +729,7 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
     // A stop that landed while the call was finishing: the result is not handed back.
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
-      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" || (call.tool === "computer" && call.args.action === "screenshot");
+      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" || (call.tool === "computer" && READ_ACTIONS.has(String(call.args.action)));
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }
     return { ...base, ...outcome };

@@ -4,6 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { ExtToHost, HostToExt, HostToMcp, McpToHost } from "@webop/core/protocol";
+import type { Budget } from "@webop/core/budget";
 import { encodeFrame, FrameDecoder } from "./framing.ts";
 import { readLines, writeLine } from "./ndjson.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
@@ -25,6 +26,14 @@ function isDead(pid: unknown): boolean {
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+/** A screenshot budget is passed through only when all three limits are sane positive integers. */
+function validBudget(b: unknown): Budget | undefined {
+  if (!isObj(b)) return undefined;
+  const ok = (n: unknown, max: number) => typeof n === "number" && Number.isInteger(n) && n > 0 && n <= max;
+  if (!ok(b.pxPerToken, 1000) || !ok(b.maxTargetPx, 10000) || !ok(b.maxTargetTokens, 100000)) return undefined;
+  return { pxPerToken: b.pxPerToken as number, maxTargetPx: b.maxTargetPx as number, maxTargetTokens: b.maxTargetTokens as number };
 }
 
 function rmQuiet(p: string): void {
@@ -107,7 +116,9 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
         sessionId = id;
         sessions.set(id, sock);
         const clientName = typeof m.client_name === "string" ? m.client_name : "unknown";
-        sendToExt({ type: "session_open", session_id: id, client_name: clientName });
+        const budget = validBudget(m.budget);
+        if (m.budget !== undefined && !budget) log("dropped invalid budget in open");
+        sendToExt({ type: "session_open", session_id: id, client_name: clientName, ...(budget ? { budget } : {}) });
         const opened: HostToMcp = { type: "opened", session_id: id, profile_id: hello!.profile_id, profile_label: hello!.profile_label };
         writeLine(sock, opened);
         return;

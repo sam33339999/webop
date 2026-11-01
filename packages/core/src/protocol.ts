@@ -1,3 +1,5 @@
+import type { Budget } from "./budget.ts";
+
 export type ErrorCode = "not_connected" | "profile_required" | "permission_denied" | "permission_required"
   | "security_check_failed" | "oob" | "stale_ref" | "attach_failed" | "protected_page"
   | "detached_by_user" | "stopped_by_user" | "tab_not_in_session" | "timeout" | "invalid_args" | "internal";
@@ -16,7 +18,7 @@ export type ToolResult = { id: string; session_id: string; content: ContentBlock
 
 // host → extension
 export type HostToExt = ({ type: "tool_call" } & ToolCall)
-  | { type: "session_open"; session_id: string; client_name: string }
+  | { type: "session_open"; session_id: string; client_name: string; budget?: Budget }
   | { type: "session_close"; session_id: string }
   | { type: "tool_cancel"; id: string; session_id: string };
 
@@ -27,7 +29,7 @@ export type ExtToHost = { type: "hello"; profile_id: string; profile_label: stri
   | { type: "profile_label"; profile_label: string };
 
 // mcp ⇄ host（socket）
-export type McpToHost = { type: "open"; client_name: string }
+export type McpToHost = { type: "open"; client_name: string; budget?: Budget }
   | { type: "call"; id: string; tool: ToolName; args: Record<string, unknown> }
   | { type: "cancel"; id: string };
 

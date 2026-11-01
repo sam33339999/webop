@@ -386,3 +386,27 @@ test("timeout message reports the total waited after an extension", async () => 
   assert.ok(ms >= 300, text(r));
   host.close();
 });
+
+test("t_budget_flags_sent: the screenshot budget goes out with open", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] }));
+  const server = createMcpServer({ root, budget: { pxPerToken: 28, maxTargetPx: 1024, maxTargetTokens: 1568 } });
+  const client = new Client({ name: "test-agent", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+  await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  const open = host.seen.find((m) => m.type === "open");
+  assert.deepEqual(open.budget, { pxPerToken: 28, maxTargetPx: 1024, maxTargetTokens: 1568 });
+  host.close();
+});
+
+test("no budget flags: open carries no budget", async () => {
+  const root = tmpRoot();
+  const host = await fakeHost(root, "p1", "Work", (m, s) =>
+    writeLine(s, { type: "result", id: m.id, content: [{ type: "text", text: "ok" }] }));
+  const client = await connectClient({ root });
+  await client.callTool({ name: "browser_tabs_list", arguments: {} });
+  assert.equal(host.seen.find((m) => m.type === "open").budget, undefined);
+  host.close();
+});

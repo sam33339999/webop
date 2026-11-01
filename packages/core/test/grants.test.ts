@@ -14,6 +14,7 @@ const policy = (over: Partial<Policy> = {}): Policy => ({
 test("levelFor maps tools and actions to levels", () => {
   assert.equal(levelFor("computer", "screenshot"), "read");
   assert.equal(levelFor("computer", "left_click"), "act");
+  assert.equal(levelFor("computer", "zoom"), "read");
   assert.equal(levelFor("navigate"), "read");
   assert.equal(levelFor("tabs_create"), "read");
   assert.equal(levelFor("read_page"), "read");

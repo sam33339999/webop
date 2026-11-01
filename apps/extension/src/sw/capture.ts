@@ -1,7 +1,8 @@
 import type { ContentBlock } from "@webop/core/protocol";
 import type { ScreenshotContext } from "@webop/core/coords";
-import { planCapture } from "@webop/core/budget";
-import { CdpError, attach, isDialogOpen, send, takeFreshAttach } from "./cdp.ts";
+import { DEFAULT_BUDGET, planCapture, type Budget } from "@webop/core/budget";
+import { toViewport } from "@webop/core/coords";
+import { CdpError, attach, dialogError, isDialogOpen, send, takeFreshAttach } from "./cdp.ts";
 
 const JPEG_QUALITY = 75;
 const OVERLAY_SETTLE_MS = 50;
@@ -76,7 +77,7 @@ async function waitForStableViewport(tabId: number): Promise<void> {
 }
 
 /** `store: false` takes a picture for the user's eyes (permission prompt) without replacing the context the agent's coordinates are mapped with. */
-export async function screenshot(tabId: number, opts: { store?: boolean } = {}): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
+export async function screenshot(tabId: number, opts: { store?: boolean; budget?: Budget } = {}): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   await attach(tabId);
   // A dialog freezes the page's script thread, so every probe/settle step here would stall; capture the viewport as-is.
   if (isDialogOpen(tabId)) return dialogScreenshot(tabId);
@@ -89,7 +90,7 @@ export async function screenshot(tabId: number, opts: { store?: boolean } = {}):
   }
 }
 
-async function fullScreenshot(tabId: number, opts: { store?: boolean }): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
+async function fullScreenshot(tabId: number, opts: { store?: boolean; budget?: Budget }): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
   if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
   if (__DEV__) hiderLog.push({ tabId, hidden: true });
@@ -105,7 +106,7 @@ async function fullScreenshot(tabId: number, opts: { store?: boolean }): Promise
         clip: { x: p.scrollX, y: p.scrollY, width: 1, height: 1, scale: 1 },
       });
     }
-    const { clipScale, outWidth, outHeight } = planCapture(p.width, p.height, p.dpr);
+    const { clipScale, outWidth, outHeight } = planCapture(p.width, p.height, p.dpr, opts.budget ?? DEFAULT_BUDGET);
     if (__DEV__) hiderLog.push({ tabId, at: "before" });
     const { data } = await send<{ data: string }>(tabId, "Page.captureScreenshot", {
       format: "jpeg",
@@ -150,4 +151,44 @@ async function dialogScreenshot(tabId: number): Promise<{ block: ContentBlock; c
     }
   }
   return { block: { type: "text", text: "No screenshot available while a dialog is open." }, ctx };
+}
+
+/**
+ * A close-up of `region` ([x0, y0, x1, y1] in the last screenshot's frame), at up to device resolution within the budget.
+ * The tab's coordinate frame is left alone: coordinates keep referring to the last full screenshot.
+ */
+export async function zoom(tabId: number, region: [number, number, number, number], budget: Budget = DEFAULT_BUDGET): Promise<{ block: ContentBlock; width: number; height: number }> {
+  const ctx = getContext(tabId);
+  if (!ctx) throw new CdpError("invalid_args", "No screenshot context for this tab; take a screenshot first.");
+  const [x0, y0, x1, y1] = region;
+  if (!(x1 > x0 && y1 > y0)) throw new CdpError("invalid_args", "region must be [x0, y0, x1, y1] with x1 > x0 and y1 > y0.");
+  const a = toViewport(x0, y0, ctx);
+  if ("oobError" in a) throw new CdpError("oob", a.oobError);
+  const b = toViewport(x1, y1, ctx);
+  if ("oobError" in b) throw new CdpError("oob", b.oobError);
+  await attach(tabId);
+  if (isDialogOpen(tabId)) throw dialogError();
+  const p = await probe(tabId);
+  if (p.width !== ctx.viewportWidth || p.height !== ctx.viewportHeight) {
+    throw new CdpError("invalid_args", `Not performed: the viewport changed size since the last screenshot (${ctx.viewportWidth}x${ctx.viewportHeight} → ${p.width}x${p.height}); take a new screenshot first.`);
+  }
+  const left = Math.min(a.viewport[0], p.width - 1);
+  const top = Math.min(a.viewport[1], p.height - 1);
+  const width = Math.max(1, Math.min(b.viewport[0], p.width) - left);
+  const height = Math.max(1, Math.min(b.viewport[1], p.height) - top);
+  const { clipScale, outWidth, outHeight } = planCapture(width, height, p.dpr, budget);
+  await hideOverlay(tabId, true);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, OVERLAY_SETTLE_MS));
+    const { data } = await send<{ data: string }>(tabId, "Page.captureScreenshot", {
+      format: "jpeg",
+      quality: JPEG_QUALITY,
+      fromSurface: true,
+      captureBeyondViewport: false,
+      clip: { x: p.scrollX + left, y: p.scrollY + top, width, height, scale: clipScale },
+    });
+    return { block: { type: "image", data, mimeType: "image/jpeg" }, width: outWidth, height: outHeight };
+  } finally {
+    await hideOverlay(tabId, false);
+  }
 }

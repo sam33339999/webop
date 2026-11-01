@@ -4,20 +4,20 @@ import { extensionIdFromKey } from "@webop/core/extension-id";
 import { runHost } from "./host.ts";
 import { install, uninstall } from "./install.ts";
 import { runMcp } from "./mcp.ts";
+import { MCP_USAGE, parseMcpArgs } from "./mcp-args.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
-const usage = "usage: webop native-host | webop mcp [--profile <profile_id|label>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
+const usage = "usage: webop native-host | webop mcp [--profile <id|label>] [--image-max-px <n>] [--image-max-tokens <n>] [--px-per-token <n>] | webop install [--browser-dir <dir>] | webop uninstall [--browser-dir <dir>]\n";
 if (cmd === "native-host") {
   await runHost({ input: process.stdin, output: process.stdout });
   process.exit(0);
 } else if (cmd === "mcp") {
-  const i = rest.indexOf("--profile");
-  const profile = i >= 0 ? rest[i + 1] : undefined;
-  if (i >= 0 && !profile) {
-    process.stderr.write("usage: webop mcp [--profile <profile_id|label>]\n");
+  const parsed = parseMcpArgs(rest);
+  if ("error" in parsed) {
+    process.stderr.write(`webop mcp: ${parsed.error}\n${MCP_USAGE}`);
     process.exit(2);
   }
-  await runMcp(profile);
+  await runMcp(parsed);
   process.exit(0);
 } else if (cmd === "install") {
   const i = rest.indexOf("--browser-dir");

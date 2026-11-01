@@ -313,3 +313,20 @@ test("t_profile_label_before_listen: a label sent right after hello is not lost"
   await until(() => label() === "Early");
   t.input.end(); await t.done;
 });
+
+test("t_open_budget_forwarded: a valid budget reaches session_open; an invalid one is dropped", async () => {
+  const t = setup();
+  t.sendHello();
+  await until(() => fs.existsSync(descriptorPath("p1", t.root)));
+  const a = await t.connect();
+  const budget = { pxPerToken: 28, maxTargetPx: 800, maxTargetTokens: 1568 };
+  writeLine(a.c, { type: "open", client_name: "x", budget });
+  await until(() => t.fromHost.some((m) => m.type === "session_open"));
+  assert.deepEqual(t.fromHost.find((m) => m.type === "session_open").budget, budget);
+  const b = await t.connect();
+  writeLine(b.c, { type: "open", client_name: "y", budget: { pxPerToken: 0, maxTargetPx: "big" } });
+  await until(() => t.fromHost.filter((m) => m.type === "session_open").length === 2);
+  assert.equal(t.fromHost.filter((m) => m.type === "session_open")[1].budget, undefined);
+  a.c.destroy(); b.c.destroy();
+  t.input.end(); await t.done;
+});

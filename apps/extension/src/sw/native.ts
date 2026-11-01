@@ -48,7 +48,7 @@ function post(p: chrome.runtime.Port, msg: ExtToHost): void {
 }
 
 async function onMessage(p: chrome.runtime.Port, msg: HostToExt): Promise<void> {
-  if (msg.type === "session_open") await openSession(msg.session_id, msg.client_name);
+  if (msg.type === "session_open") await openSession(msg.session_id, msg.client_name, msg.budget);
   else if (msg.type === "session_close") await closeSession(msg.session_id);
   else if (msg.type === "tool_cancel") cancelCall(msg.session_id, msg.id);
   else if (msg.type === "tool_call") {

@@ -8,6 +8,7 @@ import type { ContentBlock, ErrorCode, McpToHost, ToolName } from "@webop/core/p
 import { readLines, writeLine } from "./ndjson.ts";
 import { logDir, runDir, socketPath } from "./paths.ts";
 import { TOOL_DEFS } from "./tool-schemas.ts";
+import type { Budget } from "@webop/core/budget";
 
 const MAX_EXTEND_MS = 600_000;
 
@@ -62,7 +63,7 @@ function liveProfiles(root?: string): { profile_id: string; profile_label: strin
   return out;
 }
 
-export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; profile?: string }): McpServer {
+export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; profile?: string; budget?: Budget }): McpServer {
   const root = opts.root;
   const callTimeoutMs = opts.callTimeoutMs ?? 60_000;
   const pinned = opts.profile;
@@ -169,7 +170,7 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; p
       };
       sock.once("connect", () => {
         const name = server.server.getClientVersion()?.name ?? "unknown";
-        writeLine(sock, { type: "open", client_name: name } satisfies McpToHost);
+        writeLine(sock, { type: "open", client_name: name, ...(opts.budget ? { budget: opts.budget } : {}) } satisfies McpToHost);
       });
       const t = setTimeout(() => {
         if (!opened) {
@@ -301,8 +302,8 @@ export function createMcpServer(opts: { root?: string; callTimeoutMs?: number; p
   return server;
 }
 
-export async function runMcp(profile?: string): Promise<void> {
-  const server = createMcpServer({ profile });
+export async function runMcp(o: { profile?: string; budget?: Budget } = {}): Promise<void> {
+  const server = createMcpServer(o);
   const log = logLine;
   process.on("uncaughtException", (e) => log(`uncaughtException ${e.stack ?? e}`));
   process.on("unhandledRejection", (e) => log(`unhandledRejection ${e}`));
