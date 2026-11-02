@@ -86,7 +86,7 @@ export const TOOL_DEFS: ToolDef[] = [
     description:
       "List the console messages and uncaught exceptions of a tab, oldest first. Recording starts on the first call for " +
       "the tab, so messages logged before it may be missing. Pass a pattern to keep the output small. pattern is a " +
-      "case-insensitive regular expression matched against the message text, only_errors keeps errors and exceptions, " +
+      "case-insensitive regular expression (at most 200 characters) matched against the message text, only_errors keeps errors and exceptions, " +
       "limit returns the newest N (default 100), clear empties the list after this read. Exceptions include their stack. " +
       "Credentials in URLs are shown as REDACTED; other values the page logs are not. Moving the tab to another site " +
       "clears the list." +

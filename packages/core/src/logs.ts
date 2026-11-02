@@ -97,10 +97,17 @@ function summary(r: { matched: number; entries: unknown[]; dropped: number }): s
   return s;
 }
 
+/** Local wall-clock time of an entry as HH:MM:SS.mmm. */
+export function timeOf(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
 export function formatConsole(r: { matched: number; entries: ConsoleEntry[]; dropped: number; notes: string[] }): string {
   const lines = [summary(r), ...r.notes];
   for (const e of r.entries) {
-    let line = `[${e.type}] ${e.text}`;
+    let line = `${timeOf(e.ts)} [${e.type}] ${e.text}`;
     if (e.url) line += ` (${e.url}${e.line !== undefined ? `:${e.line}` : ""}${e.column !== undefined ? `:${e.column}` : ""})`;
     lines.push(line);
     if (e.type === "exception" && e.stack) {
@@ -114,12 +121,16 @@ export function formatNetwork(r: { matched: number; entries: NetworkEntry[]; dro
   const lines = [summary(r), ...r.notes];
   for (const e of r.entries) {
     const state = e.failed !== undefined ? `failed ${e.failed}` : e.status !== undefined ? String(e.status) : "pending";
-    lines.push(`${e.method} ${state} ${e.resourceType} ${e.url}`);
+    lines.push(`${timeOf(e.ts)} ${e.method} ${state} ${e.resourceType} ${e.url}`);
   }
   return lines.join("\n");
 }
 
+/** Longer patterns are refused: the regex runs over every buffered message, so its size is bounded (ReDoS). */
+export const PATTERN_MAX = 200;
+
 export function parsePattern(src: string): RegExp {
+  if (src.length > PATTERN_MAX) throw new Error(`Pattern is longer than ${PATTERN_MAX} characters.`);
   try {
     return new RegExp(src, "i");
   } catch {

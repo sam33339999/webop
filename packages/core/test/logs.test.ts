@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   RingLog, makeConsoleEntry, makeNetworkEntry, queryConsole, queryNetwork,
-  formatConsole, formatNetwork, parsePattern, TEXT_CAP, type ConsoleEntry, type NetworkEntry,
+  formatConsole, formatNetwork, parsePattern, timeOf, PATTERN_MAX, TEXT_CAP, type ConsoleEntry, type NetworkEntry,
 } from "../src/logs.ts";
 
 const c = (type: string, text: string, ts = 0): ConsoleEntry => ({ type, text, ts });
@@ -81,7 +81,7 @@ test("formatConsole indents stack and shows source", () => {
     matched: 1, dropped: 0, notes: [],
     entries: [{ type: "exception", text: "boom", url: "https://a.com/x.js", line: 3, column: 4, stack: "at f\nat g", ts: 0 }],
   });
-  assert.ok(out.includes("[exception] boom (https://a.com/x.js:3:4)"));
+  assert.ok(out.includes(`${timeOf(0)} [exception] boom (https://a.com/x.js:3:4)`));
   assert.ok(out.includes("\n    at f\n    at g"));
   assert.ok(formatConsole({ matched: 1, dropped: 0, notes: [], entries: [c("log", "hi")] }).includes("[log] hi"));
 });
@@ -89,6 +89,19 @@ test("formatConsole indents stack and shows source", () => {
 test("parsePattern", () => {
   assert.throws(() => parsePattern("("));
   assert.ok(parsePattern("AB").test("xab"));
+  assert.ok(parsePattern("a".repeat(PATTERN_MAX)).test("a".repeat(PATTERN_MAX)));
+  assert.throws(() => parsePattern("a".repeat(PATTERN_MAX + 1)), /longer than 200/);
+});
+
+test("timeOf is local HH:MM:SS.mmm and prefixes every entry line", () => {
+  const ts = new Date(2026, 10, 2, 9, 5, 7, 42).getTime();
+  assert.equal(timeOf(ts), "09:05:07.042");
+  const net = formatNetwork({ matched: 1, entries: [n({ status: 200, ts })], dropped: 0, notes: ["note"] }).split("\n");
+  assert.equal(net[1], "note");
+  assert.equal(net[2], "09:05:07.042 GET 200 fetch https://a.com/");
+  const con = formatConsole({ matched: 1, dropped: 0, notes: [], entries: [{ type: "exception", text: "boom", stack: "at f", ts }] }).split("\n");
+  assert.equal(con[1], "09:05:07.042 [exception] boom");
+  assert.equal(con[2], "    at f");
 });
 
 test("RingLog.find returns the newest match", () => {
