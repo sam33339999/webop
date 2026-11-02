@@ -90,3 +90,21 @@ test("parsePattern", () => {
   assert.throws(() => parsePattern("("));
   assert.ok(parsePattern("AB").test("xab"));
 });
+
+test("RingLog.find returns the newest match", () => {
+  const l = new RingLog<{ id: string; v: number }>();
+  l.push({ id: "a", v: 1 });
+  l.push({ id: "a", v: 2 });
+  assert.equal(l.find((e) => e.id === "a")?.v, 2);
+});
+
+test("query limit is clamped to >= 0", () => {
+  const l = new RingLog<ConsoleEntry>();
+  for (let i = 0; i < 3; i++) l.push(c("log", "m", i));
+  assert.equal(queryConsole(l, { limit: 0 }).entries.length, 0);
+  assert.equal(queryConsole(l, { limit: -2 }).entries.length, 0);
+  assert.equal(queryConsole(l, { limit: -2 }).matched, 3);
+  const nl = new RingLog<NetworkEntry>();
+  nl.push(n({}));
+  assert.equal(queryNetwork(nl, { limit: -5 }).entries.length, 0);
+});

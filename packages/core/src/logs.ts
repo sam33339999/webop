@@ -22,7 +22,11 @@ export class RingLog<T> {
   all(): T[] { return this.items.slice(); }
   clear(): void { this.items = []; this.droppedCount = 0; }
   get dropped(): number { return this.droppedCount; }
-  find(pred: (e: T) => boolean): T | undefined { return this.items.find(pred); }
+  /** Returns the newest entry matching pred (searches newest to oldest). */
+  find(pred: (e: T) => boolean): T | undefined {
+    for (let i = this.items.length - 1; i >= 0; i--) if (pred(this.items[i])) return this.items[i];
+    return undefined;
+  }
 }
 
 // Redact first, then truncate, so truncation can never leave part of a credential visible.
@@ -50,7 +54,7 @@ export type NetworkQuery = { urlPattern?: string; resourceType?: string; onlyFai
 const DEFAULT_LIMIT = 100;
 
 function lastN<T>(arr: T[], limit?: number): T[] {
-  const n = limit ?? DEFAULT_LIMIT;
+  const n = Math.max(0, Math.floor(limit ?? DEFAULT_LIMIT));
   return n >= arr.length ? arr : arr.slice(arr.length - n);
 }
 
