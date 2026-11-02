@@ -1,6 +1,7 @@
 import { bumpStopEpoch, cancelSession, stopEpochOf } from "./callctx.ts";
 import { ensureInjected, sendWithInject } from "./inject.ts";
-import { CdpError, detach, haltTab, onDetached, setTabGuard } from "./cdp.ts";
+import { attach, CdpError, detach, haltTab, onDetached, setTabGuard } from "./cdp.ts";
+import { forgetTab } from "./logs.ts";
 import { abortBackgroundAsks, revokeSessionGrants } from "./permissions.ts";
 import type { Budget } from "@webop/core/budget";
 
@@ -123,6 +124,7 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
   await Promise.allSettled([
     ...tabIds.map(async (id) => {
       await detach(id);
+      forgetTab(id);
       chrome.tabs.sendMessage(id, { type: "webop:session_end" }).catch(() => {});
     }),
     ...ended.map(revokeSessionGrants),
@@ -242,8 +244,11 @@ async function enroll(s: Store, st: SessionState, tabId: number): Promise<void> 
   await persist(s);
 }
 
-/** Opens a background tab and puts it in the session's tab group. The caller must have checked the URL. */
-export async function createTab(session_id: string, url: string, beforeCreate: () => void = () => {}): Promise<chrome.tabs.Tab> {
+/**
+ * Opens a blank background tab, puts it in the session's tab group and attaches the debugger so network recording is
+ * running before the first request. It does not navigate: the caller loads the (already checked) URL.
+ */
+export async function createTab(session_id: string, beforeCreate: () => void = () => {}): Promise<chrome.tabs.Tab> {
   const tabId = await locked(async (s) => {
     if (s.closed.includes(session_id)) throw sessionClosedError();
     if (__DEV__) await sessionDevHooks.beforeCreate?.();
@@ -252,7 +257,7 @@ export async function createTab(session_id: string, url: string, beforeCreate: (
     const st = open(s, session_id, session_id);
     let tab: chrome.tabs.Tab;
     try {
-      tab = await chrome.tabs.create({ url, active: false });
+      tab = await chrome.tabs.create({ url: "about:blank", active: false });
     } catch (e) {
       // The profile has no window to put the tab in (normally the link is dropped before an agent can get here).
       if (String(e instanceof Error ? e.message : e).includes("No current window")) {
@@ -264,8 +269,8 @@ export async function createTab(session_id: string, url: string, beforeCreate: (
     await enroll(s, st, tab.id);
     return tab.id;
   });
-  // Outside the lock; best effort, since a loading page is covered by the onUpdated hook and the lazy inject on first use.
-  await ensureInjected(tabId).catch(() => {});
+  // Outside the lock; best effort: without it the tab simply has no recording until the next attach.
+  await attach(tabId, { allowBlank: true }).catch(() => {});
   return await chrome.tabs.get(tabId);
 }
 

@@ -61,6 +61,26 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tab_id: z.number(), max_chars: z.number().optional() },
   },
   {
+    tool: "read_network_requests",
+    name: "browser_read_network_requests",
+    description:
+      "List the network requests of a tab, oldest first. Recording starts as soon as the session takes over the tab " +
+      "(browser_tabs_create records the first page load). Each entry has only the URL, method, resource type and HTTP " +
+      "status or network error (no headers or bodies); credentials in URLs are shown as REDACTED. Moving the tab to " +
+      "another site clears the list. url_pattern is a case-insensitive substring of the URL, resource_type filters by " +
+      "type (document, fetch, xhr, script, image, ...), only_failed keeps status >= 400 and network errors, limit returns " +
+      "the newest N (default 100), clear empties the list after this read." +
+      SAFETY,
+    shape: {
+      tab_id: z.number(),
+      url_pattern: z.string().optional(),
+      resource_type: z.string().optional(),
+      only_failed: z.boolean().optional(),
+      limit: z.number().optional(),
+      clear: z.boolean().optional(),
+    },
+  },
+  {
     tool: "form_input",
     name: "browser_form_input",
     description:

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>logs</title></head>
+<body>
+<button id="b">Log</button>
+<script>
+  console.log("boot-log");
+  console.error("boot-error");
+  fetch("/status/200?token=abc&q=1");
+  fetch("/status/500");
+  fetch("/missing.json");
+  fetch("http://127.0.0.1:__REFUSED_PORT__/refused").catch(() => {});
+  document.getElementById("b").addEventListener("click", () => {
+    console.log("clicked-log");
+    setTimeout(() => { throw new Error("late-boom"); });
+  });
+</script>
+</body>
+</html>

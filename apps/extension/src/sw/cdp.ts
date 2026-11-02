@@ -38,6 +38,7 @@ const inputCounts = new Map<number, number>();
 /** Dev-only fault injection (see the `__webop` hook): makes the next `Page.captureScreenshot` fail once. */
 export const devFaults: { failNextCapture: boolean; beforeFail?: () => Promise<void> } = { failNextCapture: false };
 const detachListeners: Array<(tabId: number, reason: string) => void> = [];
+const attachListeners: Array<(tabId: number) => Promise<void>> = [];
 
 let mayControl: (tabId: number) => boolean = () => true;
 
@@ -130,8 +131,31 @@ export function dropDetachNoticeSince(tabId: number, since: number): void {
   if (at !== undefined && at >= since) detachNotices.delete(tabId);
 }
 
+/** Called when our attachment ends: Chrome's onDetach (or the dev hook), or `"released"` when we detach ourselves. */
 export function onDetached(cb: (tabId: number, reason: string) => void): void {
   detachListeners.push(cb);
+}
+
+/**
+ * Runs after every successful attach, including an attachment re-adopted after a service-worker restart; callbacks are
+ * awaited in order before `attach` resolves. They must use `rawCommand`, never `send` (that would attach again).
+ */
+export function onAttached(cb: (tabId: number) => Promise<void>): void {
+  attachListeners.push(cb);
+}
+
+export function isAttached(tabId: number): boolean {
+  return attached.has(tabId);
+}
+
+/** Sends a CDP command on the current attachment without attaching, timeouts or dialog handling. */
+export async function rawCommand(tabId: number, method: string, params?: object): Promise<unknown> {
+  if (__DEV__ && devSent.length < 2000) devSent.push(`${tabId} ${method}`);
+  return chrome.debugger.sendCommand({ tabId }, method, params as Record<string, unknown> | undefined);
+}
+
+async function runAttachListeners(tabId: number): Promise<void> {
+  for (const cb of attachListeners) await cb(tabId).catch(() => {});
 }
 
 /** Single place that reacts to a debugger detach, whether it came from Chrome or from the dev hook. */
@@ -159,14 +183,16 @@ async function isAttachedByUs(tabId: number): Promise<boolean> {
   return targets.some((t) => t.tabId === tabId && t.attached && t.extensionId === chrome.runtime.id);
 }
 
-async function doAttach(tabId: number): Promise<void> {
+async function doAttach(tabId: number, allowBlank: boolean): Promise<void> {
   let url: string | undefined;
   try {
     url = (await chrome.tabs.get(tabId)).url;
   } catch {
     throw new CdpError("tab_not_in_session", `Tab ${tabId} does not exist.`);
   }
-  if (!url || !/^https?:\/\//i.test(url)) {
+  // A freshly created tab sits on about:blank until we navigate it, so recording can start before its first request.
+  const blankOk = allowBlank && url === "about:blank";
+  if (!blankOk && (!url || !/^https?:\/\//i.test(url))) {
     throw new CdpError("protected_page", `Cannot automate this page (${url ?? "unknown URL"}); only http(s) pages are supported.`);
   }
   const failure = "DevTools may be open on this tab, or the renderer may have crashed";
@@ -181,6 +207,7 @@ async function doAttach(tabId: number): Promise<void> {
     if (!(e instanceof CdpError) && await isAttachedByUs(tabId)) {
       attached.add(tabId);
       lastDetach.delete(tabId);
+      await runAttachListeners(tabId);
       return;
     }
     if (e instanceof CdpError) throw e;
@@ -193,6 +220,7 @@ async function doAttach(tabId: number): Promise<void> {
   lastDetach.delete(tabId);
   // Needed for `Page.javascriptDialogOpening`/`Closed`: a blocked page must be recognized, not waited on.
   await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => {});
+  await runAttachListeners(tabId);
 }
 
 /** True once per fresh attach (not for a re-adopted attachment): the caller should let the viewport settle before capturing. */
@@ -200,13 +228,13 @@ export function takeFreshAttach(tabId: number): boolean {
   return unsettled.delete(tabId);
 }
 
-export async function attach(tabId: number): Promise<void> {
+export async function attach(tabId: number, opts: { allowBlank?: boolean } = {}): Promise<void> {
   if (!mayControl(tabId)) throw sessionClosed();
   if (halted.has(tabId)) throw stoppedError();
   if (attached.has(tabId)) return;
   let inflight = attaching.get(tabId);
   if (!inflight) {
-    inflight = doAttach(tabId).finally(() => attaching.delete(tabId));
+    inflight = doAttach(tabId, opts.allowBlank === true).finally(() => attaching.delete(tabId));
     attaching.set(tabId, inflight);
   }
   await inflight;
@@ -295,7 +323,10 @@ export async function send<T = unknown>(tabId: number, method: string, params?: 
 
 /** Releases our debugger attachment on a tab (the tab itself is untouched) and clears the bookkeeping. */
 export async function detach(tabId: number): Promise<void> {
+  const was = attached.has(tabId);
   await chrome.debugger.detach({ tabId }).catch(() => {});
   attached.delete(tabId);
   lastDetach.delete(tabId);
+  // Chrome fires no onDetach for an API-initiated detach; tell listeners ourselves.
+  if (was) for (const cb of detachListeners) cb(tabId, "released");
 }

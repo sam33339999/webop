@@ -1,6 +1,6 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
-import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isDialogOpen, notePageChange, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
+import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isAttached, isDialogOpen, notePageChange, rawCommand, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
 import { toViewport } from "@webop/core/coords";
 import { getContext, prepareForInput, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
@@ -10,6 +10,8 @@ import { accessState, askInBackground, deniedError, isSiteReadable, requireAcces
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
 import { promptTimeouts } from "./prompt.ts";
 import { levelFor, type Level } from "@webop/core/grants";
+import { formatNetwork, queryNetwork } from "@webop/core/logs";
+import { networkLog, takeNotes } from "./logs.ts";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -480,12 +482,15 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "tabs_create") {
     const url = urlArg(call.args);
     await gate(call.session_id, ctx, url, "read", { what: "no tab was opened" });
-    const tab = await createTab(call.session_id, url, () => assertBeforeDeadline(ctx));
+    const tab = await createTab(call.session_id, () => assertBeforeDeadline(ctx));
     const tab_id = tab.id as number;
     void showGlow(call.session_id, tab_id, ctx.stopped);
     let closed = false;
     try {
-      await afterLoad(tab_id, async () => {});
+      // The tab opened blank with recording already on; loading the URL now captures its very first request.
+      await afterLoad(tab_id, () => chrome.tabs.update(tab_id, { url }));
+      // Drop the blank start page from history, so "back" never leads to it (and history looks as if the tab opened at the URL).
+      if (isAttached(tab_id)) await rawCommand(tab_id, "Page.resetNavigationHistory").catch(() => {});
       let landed: string;
       try {
         landed = await currentUrl(tab_id);
@@ -623,6 +628,10 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "get_page_text") {
     const tabId = tabIdOf(call.args);
     return withTab(tabId, ctx, () => pageText(call, ctx));
+  }
+  if (call.tool === "read_network_requests") {
+    // Outside withTab: it only reads the in-memory buffer and must never attach to (or queue behind) the tab.
+    return readNetwork(call, ctx);
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
@@ -774,6 +783,50 @@ async function pageText(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   return { content: [{ type: "text", text: `Title: ${title}\nURL: ${url}\n\n${body}` }] };
 }
 
+function optString(args: Record<string, unknown>, name: string): string | undefined {
+  const v = args[name];
+  if (v !== undefined && typeof v !== "string") invalid(`${name} must be a string.`);
+  return v;
+}
+
+function optBool(args: Record<string, unknown>, name: string): boolean {
+  const v = args[name];
+  if (v !== undefined && typeof v !== "boolean") invalid(`${name} must be a boolean.`);
+  return v === true;
+}
+
+function optLimit(args: Record<string, unknown>): number | undefined {
+  const v = args.limit;
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) invalid("limit must be a positive integer.");
+  return v;
+}
+
+/**
+ * Network requests recorded since the tab was taken over (read level, checked against the tab's current URL). Reads
+ * the buffer only: never attaches, never sends CDP. `clear` empties the buffer after this call's answer is produced.
+ */
+async function readNetwork(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const urlPattern = optString(call.args, "url_pattern");
+  const resourceType = optString(call.args, "resource_type");
+  const onlyFailed = optBool(call.args, "only_failed");
+  const clear = optBool(call.args, "clear");
+  const limit = optLimit(call.args);
+  await assertOwned(call.session_id, tabId);
+  await requireReadable(call.session_id, tabId, ctx);
+  const log = networkLog(tabId);
+  const r = queryNetwork(log, { urlPattern, resourceType, onlyFailed, limit });
+  const dropped = log.dropped;
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, false, ctx);
+  // A stopped call hands nothing back, so it must not empty the buffer either.
+  if (ctx.stopped()) throw stoppedError();
+  const text = formatNetwork({ ...r, dropped, notes: takeNotes(tabId) });
+  if (clear) log.clear();
+  return { content: [{ type: "text", text }] };
+}
+
 export async function dispatch(call: ToolCall): Promise<ToolResult> {
   const base = { id: call.id, session_id: call.session_id };
   const { ctx, close } = openCallContext(call.session_id, call.id);
@@ -788,7 +841,9 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
     // A stop that landed while the call was finishing: the result is not handed back.
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
-      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" || (call.tool === "computer" && READ_ACTIONS.has(String(call.args.action)));
+      const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" ||
+        call.tool === "read_network_requests" || call.tool === "read_console_messages" ||
+        (call.tool === "computer" && READ_ACTIONS.has(String(call.args.action)));
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }
     return { ...base, ...outcome };
