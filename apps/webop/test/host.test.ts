@@ -365,3 +365,55 @@ test("t_ping_opens_no_session: a ping next to a live session opens and closes no
   a.c.destroy();
   t.input.end(); await t.done;
 });
+
+async function gifSetup(gifDir: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wh-"));
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const done = runHost({ input, output, root, gifDir });
+  input.write(encodeFrame({ type: "hello", profile_id: "p1", profile_label: "Work", extension_version: "0.0.1" }));
+  await until(() => fs.existsSync(descriptorPath("p1", root)));
+  const c = net.createConnection(socketPath("p1", root));
+  await new Promise((r) => c.once("connect", r));
+  const msgs: any[] = [];
+  readLines(c, (m) => msgs.push(m));
+  writeLine(c, { type: "open", client_name: "A" });
+  await until(() => msgs.length === 1);
+  return { root, input, c, msgs, done, sid: msgs[0].session_id as string };
+}
+
+test("tool_result with file: written to gifDir, file stripped, path appended", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gd-")), "out");
+  const t = await gifSetup(dir);
+  t.input.write(encodeFrame({ type: "tool_result", id: "1", session_id: t.sid, content: [{ type: "text", text: "Exported 1 frames." }], file: { name: "t.gif", data: Buffer.from("GIF89a").toString("base64") } }));
+  await until(() => t.msgs.length === 2);
+  const r = t.msgs[1];
+  assert.equal("file" in r, false);
+  const p = path.join(fs.realpathSync(dir), "t.gif");
+  assert.deepEqual(r.content[r.content.length - 1], { type: "text", text: `Saved GIF to ${p} (6 bytes)` });
+  assert.equal(fs.readFileSync(p, "utf8"), "GIF89a");
+  t.c.destroy(); t.input.end(); await t.done;
+});
+
+test("gif write failure → export_failed and logged", async () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gd-")), "afile");
+  fs.writeFileSync(f, "x");
+  const t = await gifSetup(f);
+  t.input.write(encodeFrame({ type: "tool_result", id: "1", session_id: t.sid, content: [], file: { name: "t.gif", data: Buffer.from("GIF89a").toString("base64") } }));
+  await until(() => t.msgs.length === 2);
+  assert.equal(t.msgs[1].error.code, "export_failed");
+  assert.equal("file" in t.msgs[1], false);
+  const log = fs.readFileSync(path.join(t.root, "log", "host.log"), "utf8");
+  assert.match(log, /gif/i);
+  t.c.destroy(); t.input.end(); await t.done;
+});
+
+test("error-shaped result carrying file: file stripped, nothing written", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gd-")), "out");
+  const t = await gifSetup(dir);
+  t.input.write(encodeFrame({ type: "tool_result", id: "1", session_id: t.sid, error: { code: "timeout", message: "m" }, file: { name: "t.gif", data: "R0lG" } }));
+  await until(() => t.msgs.length === 2);
+  assert.deepEqual(t.msgs[1], { type: "result", id: "1", error: { code: "timeout", message: "m" } });
+  assert.equal(fs.existsSync(dir), false);
+  t.c.destroy(); t.input.end(); await t.done;
+});

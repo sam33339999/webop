@@ -8,10 +8,12 @@ import type { Budget } from "@webop/core/budget";
 import { VERSION } from "./version.ts";
 import { encodeFrame, FrameDecoder } from "./framing.ts";
 import { readLines, writeLine } from "./ndjson.ts";
+import { gifDir as defaultGifDir, writeGif } from "./gif-file.ts";
 import { descriptorPath, logDir, runDir, socketPath } from "./paths.ts";
 
 const MAX_NM_MESSAGE_BYTES = 1_048_576;
 const MAX_EXTEND_MS = 600_000;
+const MAX_GIF_BYTES = 64 * 1024 * 1024;
 
 type Hello = Extract<ExtToHost, { type: "hello" }>;
 
@@ -41,7 +43,7 @@ function rmQuiet(p: string): void {
   fs.rmSync(p, { force: true });
 }
 
-export async function runHost(io: { input: Readable; output: Writable; root?: string; pid?: number }): Promise<void> {
+export async function runHost(io: { input: Readable; output: Writable; root?: string; pid?: number; gifDir?: string }): Promise<void> {
   const { input, output, root } = io;
   const myPid = io.pid ?? process.pid;
   const logFile = path.join(logDir(root), "host.log");
@@ -208,8 +210,25 @@ export async function runHost(io: { input: Readable; output: Writable; root?: st
     } else if (m.type === "tool_result" && typeof m.session_id === "string") {
       const sock = sessions.get(m.session_id);
       if (!sock) return log(`tool_result for unknown session ${m.session_id}`);
-      const { type: _t, session_id: _s, ...rest } = m;
-      writeLine(sock, { type: "result", ...rest });
+      const { type: _t, session_id: _s, file, ...rest } = m;
+      const out: Record<string, unknown> = { type: "result", ...rest };
+      // Only success-shaped results get file handling; the GIF bytes never go to the MCP side.
+      if (file !== undefined && Array.isArray(rest.content) && rest.error === undefined) {
+        try {
+          const f = file as { name?: unknown; data?: unknown };
+          if (!isObj(file) || typeof f.name !== "string" || typeof f.data !== "string") throw new Error("invalid file payload");
+          const bytes = Buffer.from(f.data, "base64");
+          if (bytes.length === 0) throw new Error("empty GIF payload");
+          if (bytes.length > MAX_GIF_BYTES) throw new Error("GIF payload too large");
+          const saved = writeGif(io.gifDir ?? defaultGifDir(), f.name, bytes);
+          out.content = [...(rest.content as unknown[]), { type: "text", text: `Saved GIF to ${saved} (${bytes.length} bytes)` }];
+        } catch (e) {
+          log(`gif export failed: ${(e as Error).message}`);
+          delete out.content;
+          out.error = { code: "export_failed", message: `Could not save GIF: ${(e as Error).message}` };
+        }
+      }
+      writeLine(sock, out);
     } else if (m.type === "tool_pending" && typeof m.session_id === "string" && typeof m.id === "string") {
       const n = m.extend_ms;
       if (typeof n !== "number" || !Number.isInteger(n) || n <= 0 || n > MAX_EXTEND_MS) return log(`dropped tool_pending with invalid extend_ms ${String(n)}`);
