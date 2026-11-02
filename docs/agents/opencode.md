@@ -1,6 +1,6 @@
 # 在 opencode 使用 webop
 
-webop 讓 agent 透過 MCP（stdio）操作你日常 Chrome 中「你已授權」的網站。提供十一個工具：
+webop 讓 agent 透過 MCP（stdio）操作你日常 Chrome 中「你已授權」的網站。提供十四個工具：
 
 | 工具 | 用途 | 等級 |
 |---|---|---|
@@ -12,6 +12,9 @@ webop 讓 agent 透過 MCP（stdio）操作你日常 Chrome 中「你已授權�
 | `browser_get_page_text` | 頁面主內容的純文字（標題、網址、內文） | `read` |
 | `browser_computer` | 截圖、`zoom` 放大，以及點擊／輸入／按鍵／捲動／拖曳／懸停 | 截圖與 `zoom` 為 `read`，其餘 `act` |
 | `browser_form_input` | 以 ref 設定表單欄位的值 | `act` |
+| `browser_read_network_requests` | 讀取已記錄的網路請求（時間、網址、方法、資源類型、狀態／失敗原因／pending；不含標頭與內容） | `read` |
+| `browser_read_console_messages` | 讀取 console 訊息；第一次呼叫才開始記錄；建議帶 `pattern` 過濾 | `read` |
+| `browser_gif_creator` | 錄製 GIF（`start_recording`／`stop_recording`／`export`／`clear`），存到 `~/Downloads/webop/` | 不需要（只作用於本 session） |
 | `browser_javascript` | 在頁面執行 JavaScript（預設關閉） | `javascript` |
 | `browser_profiles_list` | 列出在線的 Chrome profile | 不經過擴充功能 |
 | `browser_profile_select` | 選定本 session 使用的 profile | 不經過擴充功能 |

@@ -26,9 +26,9 @@ agent ⇄ webop mcp（stdio MCP）⇄ 每個 profile 一個 Unix socket ⇄ webo
 | `browser_get_page_text` | 頁面主內容的純文字 | `read` |
 | `browser_computer` | 截圖、`zoom` 放大、點擊／輸入／按鍵／捲動／拖曳／懸停 | 截圖與 zoom 為 `read`，其餘 `act` |
 | `browser_form_input` | 用 ref 設定表單欄位（不會回傳所填的值） | `act` |
-| `browser_read_network_requests` | 讀取已記錄的網路請求（只有網址、方法、資源類型、狀態；網址裡的帳號密碼顯示為 `REDACTED`） | `read` |
-| `browser_read_console_messages` | 讀取 console 訊息；第一次呼叫才開始記錄；建議帶 `pattern` 過濾 | `read` |
-| `browser_gif_creator` | `start_recording`／`stop_recording`／`export`／`clear`：最多錄 50 張畫面，附點擊標記與繁體中文說明，存到 `~/Downloads/webop/`（可用 `WEBOP_GIF_DIR` 改） | 不需要（只作用於本 session） |
+| `browser_read_network_requests` | 讀取已記錄的網路請求（只有時間、網址、方法、資源類型，以及 HTTP 狀態、失敗原因或 pending，不含標頭與內容；網址裡的帳號密碼顯示為 `REDACTED`） | `read` |
+| `browser_read_console_messages` | 讀取 console 訊息（含時間）；第一次呼叫才開始記錄；建議帶 `pattern`（正規表示式，最多 200 字元）過濾 | `read` |
+| `browser_gif_creator` | `start_recording`／`stop_recording`／`export`／`clear`：最多錄 50 張畫面，附點擊標記與繁體中文說明，存到 `~/Downloads/webop/`，檔名預設 `webop-<client>-<YYYYMMDD-HHMMSS>.gif`，可用 `filename` 參數指定（`WEBOP_GIF_DIR` 是測試／進階用的覆寫，只有 Chrome 本身是帶著這個環境變數啟動時才生效；從 Dock 開的 Chrome 不會繼承 shell 的環境變數） | 不需要（只作用於本 session） |
 | `browser_javascript` | 在頁面執行 JavaScript（預設關閉） | `javascript` |
 | `browser_profiles_list` | 列出在線的 Chrome profile | — |
 | `browser_profile_select` | 選定這個 agent 要操作的 profile | — |

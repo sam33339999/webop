@@ -26,9 +26,9 @@ Fourteen `browser_*` tools:
 | `browser_get_page_text` | Main content as plain text | `read` |
 | `browser_computer` | Screenshot, `zoom`, click / type / key / scroll / drag / hover | screenshot and zoom `read`, the rest `act` |
 | `browser_form_input` | Set a form field by ref (never echoes the value) | `act` |
-| `browser_read_network_requests` | Read recorded requests (URL, method, resource type, status only; credentials in URLs shown as `REDACTED`) | `read` |
-| `browser_read_console_messages` | Read console messages; recording starts on the first call; pass `pattern` to filter | `read` |
-| `browser_gif_creator` | `start_recording` / `stop_recording` / `export` / `clear`: record up to 50 frames with click markers and captions, saved to `~/Downloads/webop/` (override with `WEBOP_GIF_DIR`) | none (this agent's session only) |
+| `browser_read_network_requests` | Read recorded requests (URL, method, resource type, and HTTP status, failure reason or pending, with a timestamp; no headers or bodies; credentials in URLs shown as `REDACTED`) | `read` |
+| `browser_read_console_messages` | Read console messages with timestamps; recording starts on the first call; pass `pattern` (a regex, at most 200 characters) to filter | `read` |
+| `browser_gif_creator` | `start_recording` / `stop_recording` / `export` / `clear`: record up to 50 frames with click markers and captions, saved to `~/Downloads/webop/` as `webop-<client>-<YYYYMMDD-HHMMSS>.gif` or the optional `filename` (`WEBOP_GIF_DIR` is a testing/advanced override that only applies when Chrome itself was started with it; Chrome launched from the Dock does not inherit shell variables) | none (this agent's session only) |
 | `browser_javascript` | Run JavaScript in the page (off by default) | `javascript` |
 | `browser_profiles_list` | List online Chrome profiles | — |
 | `browser_profile_select` | Pick the profile this agent drives | — |
