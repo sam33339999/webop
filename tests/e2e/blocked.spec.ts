@@ -170,3 +170,42 @@ test("t_real_alert: a real alert() is reported as performed at once; the next ac
     await sleep(50);
   }
 });
+
+test("t_reattach_with_dialog: re-attaching a console-recorded tab while an alert is open does not hang", async () => {
+  const h = await open();
+  const tab_id = await openTab(h.sw, `${h.baseUrl}/alert.html`);
+  const page = h.context.pages().find((p) => p.url().includes("/alert.html")) as Page;
+  assert.ok(page);
+  const dialogs: Array<{ dismiss(): Promise<void> }> = [];
+  page.on("dialog", (d) => { dialogs.push(d); });
+  // Console recording on: a re-attach now also sends Runtime.enable, which an open dialog holds.
+  const first = await call(h.sw, "read_console_messages", { tab_id });
+  assert.ok("content" in first, JSON.stringify(first));
+  await page.evaluate(() => { setTimeout(() => alert("held"), 0); });
+  for (let i = 0; i < 50 && dialogs.length === 0; i++) await sleep(50);
+  assert.equal(dialogs.length, 1, "the alert is open");
+  await h.sw.evaluate((id) => (globalThis as any).__webop.simulateDetach(id, "target_closed"), tab_id);
+  await h.sw.evaluate((t) => (globalThis as any).__webop.setTimeouts(t), { cdpSendMs: 20_000, callDeadlineMs: 50_000, probeMs: 500 });
+  const started = Date.now();
+  const shot = await call(h.sw, "computer", { action: "screenshot", tab_id });
+  const elapsed = Date.now() - started;
+  // The dialog result: a picture taken without the debugger (or the "no screenshot" text), never a timeout.
+  assert.ok("content" in shot, JSON.stringify(shot).slice(0, 300));
+  assert.ok(elapsed < 8000, `the screenshot came back in ${elapsed} ms`);
+  // Console recording could not be restarted under the dialog: the read says so instead of waiting.
+  const con = await call(h.sw, "read_console_messages", { tab_id });
+  assert.ok("error" in con, JSON.stringify(con).slice(0, 300));
+  assert.equal(con.error.code, "timeout");
+  assert.match(con.error.message, /dialog/);
+  // Once the dialog is gone the page answers again and console recording can start.
+  await dialogs[0].dismiss();
+  let after: R | undefined;
+  for (let i = 0; i < 20; i++) {
+    after = await call(h.sw, "read_console_messages", { tab_id });
+    if ("content" in after) break;
+    await sleep(250);
+  }
+  assert.ok(after && "content" in after, JSON.stringify(after).slice(0, 300));
+  const shotAfter = await call(h.sw, "computer", { action: "screenshot", tab_id });
+  assert.ok("content" in shotAfter && shotAfter.content.some((b) => b.type === "image"), JSON.stringify(shotAfter).slice(0, 300));
+});

@@ -159,6 +159,39 @@ export async function rawCommand(tabId: number, method: string, params?: object)
   return chrome.debugger.sendCommand({ tabId }, method, params as Record<string, unknown> | undefined);
 }
 
+/** How long an attach listener's command may take: a dialog or a busy page must never hold an attach open. */
+export const ATTACH_HOOK_CMD_MS = 2500;
+
+/**
+ * `rawCommand` that gives up after `ms` with a `timeout` CdpError. The command itself is left to Chrome (it may still
+ * complete later, e.g. once a dialog is dismissed); only our wait ends.
+ */
+/** True if `p` settles (resolves or rejects) within `ms`; it is never left as an unhandled rejection. */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms); });
+  try {
+    return await Promise.race([p.then(() => true, () => true), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function rawCommandWithin(tabId: number, method: string, params?: object, ms = ATTACH_HOOK_CMD_MS): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new CdpError("timeout", `${method} did not complete within ${ms / 1000}s.`)), ms);
+  });
+  const command = rawCommand(tabId, method, params);
+  // The command may reject after the timeout won; that rejection is not interesting.
+  command.catch(() => {});
+  try {
+    return await Promise.race([command, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function runAttachListeners(tabId: number): Promise<void> {
   for (const cb of attachListeners) await cb(tabId).catch(() => {});
 }
@@ -223,8 +256,15 @@ async function doAttach(tabId: number, allowBlank: boolean): Promise<void> {
   attached.add(tabId);
   unsettled.add(tabId);
   lastDetach.delete(tabId);
-  // Needed for `Page.javascriptDialogOpening`/`Closed`: a blocked page must be recognized, not waited on.
-  await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => {});
+  // Needed for `Page.javascriptDialogOpening`/`Closed`: a blocked page must be recognized, not waited on. A page whose
+  // dialog was already open when we attached never announces it, and leaves every command (this one included)
+  // unanswered until the dialog is closed: a Page.enable that does not answer in time marks the tab as blocked, the
+  // same as an announced dialog, until the command finally completes.
+  const pageEnable = rawCommand(tabId, "Page.enable");
+  if (!(await settlesWithin(pageEnable, ATTACH_HOOK_CMD_MS))) {
+    dialogsOpen.add(tabId);
+    pageEnable.then(() => { if (attached.has(tabId)) dialogsOpen.delete(tabId); }, () => {});
+  }
   await runAttachListeners(tabId);
 }
 

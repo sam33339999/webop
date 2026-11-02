@@ -208,7 +208,7 @@ test("t_console_after_enable: logs and exceptions (with stack) after enabling ar
   const text = textOf(await readCon(h, tab_id));
   assert.ok(text.includes("[log] clicked-log"), text);
   const lines = text.split("\n");
-  const ex = lines.findIndex((l) => l.startsWith("[exception]") && l.includes("late-boom"));
+  const ex = lines.findIndex((l) => /^\d\d:\d\d:\d\d\.\d{3} \[exception\]/.test(l) && l.includes("late-boom"));
   assert.ok(ex >= 0, text);
   assert.ok(lines.slice(ex + 1).some((l) => /^ {4}at .+\(.+logs\.html:\d+:\d+\)$/.test(l)), text);
   // The stack is listed once, below the message, not also inside the message text.
@@ -273,4 +273,52 @@ test("t_console_stop_then_resume: a stopped tab is read from the buffer without 
   assert.ok(net.includes("nothing was recorded between"), net);
   const con = textOf(await readCon(h, tab_id));
   assert.ok(con.includes("nothing was recorded between"), con);
+});
+
+test("t_logs_moved_while_detached: a tab that left the site while detached shows nothing of the old site", async () => {
+  const h = await open({ localhost: ["act"], "127.0.0.1": ["act"] });
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await clickLogButton(h, tab_id);
+  await sleep(300);
+  assert.ok(textOf(await readNet(h, tab_id)).includes("localhost"));
+  assert.ok(textOf(await readCon(h, tab_id)).includes("clicked-log"));
+  // Stop releases the debugger; then the tab moves to another (allowed) site while nothing of ours listens.
+  await h.sw.evaluate(() => (globalThis as any).__webop.stopSession("test"));
+  assert.equal(await isAttachedByUs(h, tab_id), false);
+  const target = `${h.altUrl}/button.html`;
+  await h.sw.evaluate(([id, u]) => chrome.tabs.update(id, { url: u }), [tab_id, target] as const);
+  await waitForUrl(h, tab_id, target);
+  const sentBefore = (await devSent(h)).length;
+  const net = textOf(await readNet(h, tab_id));
+  assert.match(net, /^0 matching/, net);
+  assert.ok(!net.includes("localhost"), net);
+  const con = textOf(await readCon(h, tab_id));
+  assert.match(con, /^0 matching/, con);
+  assert.ok(!con.includes("clicked-log") && !con.includes("localhost"), con);
+  // Neither read attached or sent anything.
+  assert.equal(await isAttachedByUs(h, tab_id), false);
+  assert.equal((await devSent(h)).length, sentBefore);
+});
+
+test("t_logs_pending_unauthorized: while the tab is navigating to a site it may not read, both reads are refused", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  const slow = `${h.altUrl}/slow?ms=4000`;
+  await h.sw.evaluate(([id, u]) => chrome.tabs.update(id, { url: u }), [tab_id, slow] as const);
+  // Wait until the navigation is in flight (and its Document request has gone out), but not committed.
+  for (let i = 0; i < 50; i++) {
+    const t = await h.sw.evaluate((id) => chrome.tabs.get(id).then((x) => ({ url: x.url, pending: x.pendingUrl })), tab_id);
+    if (t.pending === slow && t.url?.startsWith(h.baseUrl)) break;
+    await sleep(50);
+  }
+  await sleep(300);
+  const state = await h.sw.evaluate((id) => chrome.tabs.get(id).then((x) => ({ url: x.url, pending: x.pendingUrl })), tab_id);
+  assert.ok(state.url?.startsWith(h.baseUrl) && state.pending === slow, JSON.stringify(state));
+  for (const r of [await readNet(h, tab_id), await readCon(h, tab_id)]) {
+    const e = errOf(r);
+    assert.equal(e.code, "permission_required", e.message);
+    assert.ok(!e.message.includes("slow"), e.message);
+  }
 });

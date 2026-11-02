@@ -26,6 +26,14 @@ export async function startServer(): Promise<{ port: number; server: Server; clo
       res.writeHead(302, { location: parsed.searchParams.get("to") ?? "/" }).end();
       return;
     }
+    // A page whose response is held back: /slow?ms=<delay> (a navigation to it stays uncommitted meanwhile).
+    if (path === "/slow") {
+      const ms = Math.min(Number(parsed.searchParams.get("ms") ?? "3000") || 0, 20_000);
+      setTimeout(() => {
+        if (!res.writableEnded) res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<!doctype html><title>slow</title><p>slow</p>");
+      }, ms);
+      return;
+    }
     const status = /^\/status\/(\d{3})$/.exec(path);
     if (status) {
       res.writeHead(Number(status[1]), { "content-type": "text/plain" }).end(`status ${status[1]}`);

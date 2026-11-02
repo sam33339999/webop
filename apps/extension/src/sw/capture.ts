@@ -6,6 +6,8 @@ import { CdpError, attach, dialogError, isDialogOpen, send, takeFreshAttach } fr
 
 const JPEG_QUALITY = 75;
 const OVERLAY_SETTLE_MS = 50;
+/** captureVisibleTab can itself stall on a page blocked by a dialog (seen right after re-attaching to it). */
+const DIALOG_CAPTURE_MS = 2000;
 /** After a fresh debugger attach the infobar resizes the page; wait until innerWidth/innerHeight stay put. */
 const VIEWPORT_POLL_MS = 50;
 const VIEWPORT_STABLE_MS = 200;
@@ -160,11 +162,15 @@ async function dialogScreenshot(tabId: number): Promise<{ block: ContentBlock; c
   void hideOverlay(tabId, true).catch(() => {});
   if (tab) {
     try {
-      const url = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: JPEG_QUALITY });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("capture timeout")), DIALOG_CAPTURE_MS); });
+      const capture = chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: JPEG_QUALITY });
+      capture.catch(() => {});
+      const url = await Promise.race([capture, late]).finally(() => clearTimeout(timer));
       const data = url.slice(url.indexOf(",") + 1);
       return { block: { type: "image", data, mimeType: "image/jpeg" }, ctx };
     } catch {
-      // e.g. the window is minimised: report the action without a picture.
+      // e.g. the window is minimised, or the capture stalled: report the action without a picture.
     }
   }
   return { block: { type: "text", text: "No screenshot available while a dialog is open." }, ctx };

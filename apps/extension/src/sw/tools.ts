@@ -12,7 +12,7 @@ import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.
 import { promptTimeouts } from "./prompt.ts";
 import { levelFor, type Level } from "@webop/core/grants";
 import { formatConsole, formatNetwork, parsePattern, queryConsole, queryNetwork } from "@webop/core/logs";
-import { consoleEnabled, consoleLog, enableConsole, networkLog, takeNotes } from "./logs.ts";
+import { consoleEnabled, consoleLog, enableConsole, networkLog, syncSite, takeNotes } from "./logs.ts";
 import { clear as clearGif, exportGif, frameCount, isCapped, isRecording, record, start as startGif, stop as stopGif } from "./gif.ts";
 
 type Outcome = { content: ContentBlock[]; file?: { name: string; data: string } };
@@ -439,6 +439,25 @@ async function requireReadable(session_id: string, tabId: number, ctx: CallConte
 }
 
 /**
+ * For the log reads: a navigation in flight to another site has usually sent its Document request already, so the
+ * buffers may hold that site's URLs while the committed URL is still the old site. Such a read is answered like a tab
+ * already on the new site: permission_required (the user is asked in the background) or permission_denied.
+ * Returns the tab's URLs as they were checked.
+ */
+async function requirePendingReadable(session_id: string, tabId: number, ctx: CallContext): Promise<{ url: string; pendingUrl?: string }> {
+  const urls = await tabUrls(tabId);
+  const { url, pendingUrl } = urls;
+  if (pendingUrl === undefined || pendingUrl === "" || siteOf(pendingUrl) === siteOf(url)) return urls;
+  const state = await accessState(session_id, pendingUrl, "read");
+  if (state === "allow") return urls;
+  if (state === "deny") throw deniedError(pendingUrl);
+  const client_name = await clientNameOf(session_id);
+  if (ctx.stopped()) throw stoppedError();
+  askInBackground({ session_id, client_name, url: pendingUrl, level: "read", tabId });
+  throw new CdpError("permission_required", `The tab is navigating to ${siteOf(pendingUrl) ?? "a non-web page"}, which this agent has not been allowed to read; the user has been asked. Retry after they allow it.`);
+}
+
+/**
  * After a navigation or tab creation went out, a stop or cancel no longer means "Not performed": the change happened
  * (or may still complete), so the error says that instead.
  */
@@ -487,12 +506,17 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
 }
 
+/** An extra GIF frame is only taken while at least this much of the call's time is left (same slack as a prompt's). */
+const EXTRA_FRAME_MIN_MS = PENDING_MARGIN_MS;
+
 /**
  * While the session records a GIF, navigate and tabs_create add a frame of their own (they return no screenshot).
  * The picture is not handed to the agent and does not replace its coordinate frame; any failure just means no frame.
  */
 async function recordExtraFrame(session_id: string, tabId: number, ctx: CallContext, step: GifStep): Promise<void> {
   if (!isRecording(session_id) || ctx.stopped()) return;
+  // The frame is optional; the navigation's own answer must not be pushed past the call's deadline for it.
+  if (ctx.deadline - Date.now() < EXTRA_FRAME_MIN_MS) return;
   try {
     const { block, ctx: shotCtx } = await screenshot(tabId, { store: false, budget: await budgetOf(session_id) });
     // The frame ends up in a file the user shares: only keep it if the tab is still on a site this session may read.
@@ -962,12 +986,17 @@ async function readNetwork(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const limit = optLimit(call.args);
   await assertOwned(call.session_id, tabId);
   await requireReadable(call.session_id, tabId, ctx);
+  await requirePendingReadable(call.session_id, tabId, ctx);
+  // Last await before the buffer is read: the site check and the snapshot see the same tab state.
+  const urls = await tabUrls(tabId);
+  syncSite(tabId, urls.url, urls.pendingUrl);
   const log = networkLog(tabId);
   const seen = log.all();
   const r = queryNetwork(log, { urlPattern, resourceType, onlyFailed, limit });
   const dropped = log.dropped;
   await assertLive(call.session_id);
   await recheck(call.session_id, tabId, false, ctx);
+  await requirePendingReadable(call.session_id, tabId, ctx);
   // A stopped call hands nothing back, so it must not empty the buffer either.
   if (ctx.stopped()) throw stoppedError();
   const text = formatNetwork({ ...r, dropped, notes: takeNotes(tabId, "network") });
@@ -989,6 +1018,7 @@ async function readConsole(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const limit = optLimit(call.args);
   await assertOwned(call.session_id, tabId);
   await requireReadable(call.session_id, tabId, ctx);
+  await requirePendingReadable(call.session_id, tabId, ctx);
   let pattern: RegExp | undefined;
   if (source !== undefined) {
     try {
@@ -1002,12 +1032,16 @@ async function readConsole(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     await withTab(tabId, ctx, () => enableConsole(tabId));
     notes.push(CONSOLE_STARTED);
   }
+  await requirePendingReadable(call.session_id, tabId, ctx);
+  const urls = await tabUrls(tabId);
+  syncSite(tabId, urls.url, urls.pendingUrl);
   const log = consoleLog(tabId);
   const seen = log.all();
   const r = queryConsole(log, { pattern, onlyErrors, limit });
   const dropped = log.dropped;
   await assertLive(call.session_id);
   await recheck(call.session_id, tabId, false, ctx);
+  await requirePendingReadable(call.session_id, tabId, ctx);
   if (ctx.stopped()) throw stoppedError();
   const text = formatConsole({ ...r, dropped, notes: [...notes, ...takeNotes(tabId, "console")] });
   if (clear) log.clearSeen(seen);

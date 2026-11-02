@@ -1,6 +1,6 @@
 import { makeConsoleEntry, makeNetworkEntry, RingLog, type ConsoleEntry, type NetworkEntry } from "@webop/core/logs";
 import { siteOf } from "@webop/core/domain";
-import { attach, isAttached, isControllable, onAttached, onDetached, rawCommand } from "./cdp.ts";
+import { ATTACH_HOOK_CMD_MS, attach, CdpError, dialogError, isAttached, isControllable, isDialogOpen, onAttached, onDetached, rawCommandWithin } from "./cdp.ts";
 
 export type LogKind = "network" | "console";
 
@@ -47,12 +47,25 @@ export function consoleEnabled(tabId: number): boolean {
   return consoleOn.has(tabId);
 }
 
-/** Starts console recording on the tab, attaching if needed. Callers run it inside the tab's call queue. */
+/**
+ * Starts console recording on the tab, attaching if needed. Callers run it inside the tab's call queue. `Runtime.enable`
+ * waits for the page's script thread, so an open dialog (or a busy page) is reported instead of waited on; recording
+ * then stays off and the next read tries again.
+ */
 export async function enableConsole(tabId: number): Promise<void> {
   // Two first reads queued at once: the second finds it done.
   if (consoleOn.has(tabId)) return;
   await attach(tabId);
-  await rawCommand(tabId, "Runtime.enable");
+  if (isDialogOpen(tabId)) throw dialogError();
+  try {
+    await rawCommandWithin(tabId, "Runtime.enable");
+  } catch (e) {
+    if (isDialogOpen(tabId)) throw dialogError();
+    if (e instanceof CdpError && e.code === "timeout") {
+      throw new CdpError("timeout", "Console recording could not be started: the page is not responding (a JavaScript dialog or long-running script may be blocking it). Retry later.");
+    }
+    throw new CdpError("internal", `Console recording could not be started: ${e instanceof Error ? e.message : String(e)}`);
+  }
   consoleOn.add(tabId);
 }
 
@@ -86,6 +99,26 @@ function noteSite(t: TabLogs, url: string): void {
   t.site = site;
 }
 
+/**
+ * Called by the read tools (no CDP): while detached, nothing tells us that the tab moved to another site, so the
+ * buffers are matched against the tab's URL now. `pendingUrl` is the navigation in flight, whose Document request may
+ * already have been recorded. If the recorded site is neither, the buffers belong to a site the tab has left: both are
+ * emptied and the tab's current site is recorded instead.
+ */
+export function syncSite(tabId: number, url: string, pendingUrl?: string): void {
+  const t = tabs.get(tabId);
+  if (!t) return;
+  const now = siteOf(url);
+  if (t.site === undefined || t.site === now || (pendingUrl !== undefined && t.site === siteOf(pendingUrl))) {
+    if (t.site === undefined && now !== null) t.site = now;
+    return;
+  }
+  t.network.clear();
+  t.console.clear();
+  if (now !== null) t.site = now;
+  else t.site = undefined;
+}
+
 onAttached(async (tabId) => {
   // An attach that finished after the tab's session ended (and its buffers were forgotten) must not recreate them.
   if (!isControllable(tabId)) return;
@@ -100,9 +133,20 @@ onAttached(async (tabId) => {
   // The tab may have moved to another site while we were not listening.
   const url = await chrome.tabs.get(tabId).then((tab) => tab.url ?? "", () => "");
   noteSite(t, url);
-  await rawCommand(tabId, "Network.enable", { maxPostDataSize: 0 }).catch(() => {});
-  if (consoleOn.has(tabId)) await rawCommand(tabId, "Runtime.enable").catch(() => {});
-  const tree = await rawCommand(tabId, "Page.getFrameTree").catch(() => undefined) as { frameTree?: { frame?: { id?: string } } } | undefined;
+  // Each command is bounded: a dialog or a busy page must not hold the attach (and the action waiting on it) open. On a
+  // page already known to be blocked nothing is waited for. A command that does not answer in time is still pending in
+  // Chrome and takes effect once the page is free again; until then that recording counts as off.
+  const wait = () => (isDialogOpen(tabId) ? 0 : ATTACH_HOOK_CMD_MS);
+  await rawCommandWithin(tabId, "Network.enable", { maxPostDataSize: 0 }, wait()).catch(() => {});
+  if (consoleOn.has(tabId)) {
+    const enabling = rawCommandWithin(tabId, "Runtime.enable", undefined, wait());
+    const ok = await enabling.then(() => true, () => false);
+    if (!ok) {
+      // The next console read asks again (and reports an open dialog instead of waiting on it).
+      consoleOn.delete(tabId);
+    }
+  }
+  const tree = await rawCommandWithin(tabId, "Page.getFrameTree", undefined, wait()).catch(() => undefined) as { frameTree?: { frame?: { id?: string } } } | undefined;
   const id = tree?.frameTree?.frame?.id;
   if (id !== undefined) t.topFrame = id;
 });
