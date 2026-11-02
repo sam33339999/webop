@@ -26,6 +26,8 @@ webop 用 stdio MCP 對外提供 `browser_*` 工具，任何能啟動本機 MCP 
 - 操作前先截圖（browser_computer screenshot）或 browser_read_page。
 - 只需要讀內容時優先用 browser_get_page_text；看不清楚的區域用 browser_computer 的 zoom。
 - 填表單優先用 browser_form_input（先 browser_read_page 取得 ref）；它不會送出表單。
+- 除錯時用 browser_read_network_requests 看請求狀態、browser_read_console_messages 看 console 訊息（記得帶 pattern 過濾）。
+- 要留紀錄時用 browser_gif_creator：start_recording 之後先截圖，結束後 export，並把檔案路徑告訴使用者。
 - browser_javascript 預設關閉；只有其他工具做不到時才用，被拒絕就回報使用者。
 - 能用 ref 就用 ref；否則點元素的視覺中心。
 - 座標使用截圖的全解析度像素。

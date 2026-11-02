@@ -10,11 +10,11 @@
 agent ⇄ webop mcp（stdio MCP）⇄ 每個 profile 一個 Unix socket ⇄ webop native-host（Native Messaging）⇄ 擴充功能 ⇄ 你的分頁
 ```
 
-目前版本：**0.6.2**（M1–M6 里程碑已完成並手動驗收）。目前只支援 macOS。
+目前版本：**0.7.0**（M1–M6 里程碑已完成並手動驗收）。目前只支援 macOS。
 
 ## agent 可以用的工具
 
-共 11 個 `browser_*` 工具：
+共 14 個 `browser_*` 工具：
 
 | 工具 | 用途 | 需要的授權 |
 |---|---|---|
@@ -26,6 +26,9 @@ agent ⇄ webop mcp（stdio MCP）⇄ 每個 profile 一個 Unix socket ⇄ webo
 | `browser_get_page_text` | 頁面主內容的純文字 | `read` |
 | `browser_computer` | 截圖、`zoom` 放大、點擊／輸入／按鍵／捲動／拖曳／懸停 | 截圖與 zoom 為 `read`，其餘 `act` |
 | `browser_form_input` | 用 ref 設定表單欄位（不會回傳所填的值） | `act` |
+| `browser_read_network_requests` | 讀取已記錄的網路請求（只有網址、方法、資源類型、狀態；網址裡的帳號密碼顯示為 `REDACTED`） | `read` |
+| `browser_read_console_messages` | 讀取 console 訊息；第一次呼叫才開始記錄；建議帶 `pattern` 過濾 | `read` |
+| `browser_gif_creator` | `start_recording`／`stop_recording`／`export`／`clear`：最多錄 50 張畫面，附點擊標記與繁體中文說明，存到 `~/Downloads/webop/`（可用 `WEBOP_GIF_DIR` 改） | 不需要（只作用於本 session） |
 | `browser_javascript` | 在頁面執行 JavaScript（預設關閉） | `javascript` |
 | `browser_profiles_list` | 列出在線的 Chrome profile | — |
 | `browser_profile_select` | 選定這個 agent 要操作的 profile | — |
@@ -51,7 +54,7 @@ fnm use 26
 pnpm install
 pnpm -r build
 pnpm build:sea                         # 產生單一執行檔 apps/webop/dist/webop
-apps/webop/dist/webop --version        # webop 0.6.2
+apps/webop/dist/webop --version        # webop 0.7.0
 ```
 
 **先**註冊 Native Messaging host，**再**載入擴充功能：
@@ -120,4 +123,4 @@ pnpm test:e2e    # 端到端測試：Playwright Chromium + 用完即丟的 profi
 
 ## v1 不包含
 
-上架 Chrome Web Store／公證簽章、Linux 與 Windows、GIF 錄影、讀取 console 與網路請求、上傳檔案，以及 session 結束時自動關閉分頁。除了上架之外，其餘都已列在 [roadmap](docs/roadmap.md)。
+上架 Chrome Web Store／公證簽章、Linux 與 Windows、上傳檔案，以及 session 結束時自動關閉分頁。除了上架之外，其餘都已列在 [roadmap](docs/roadmap.md)。

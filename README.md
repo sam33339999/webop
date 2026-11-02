@@ -10,11 +10,11 @@ It is a Manifest V3 browser extension plus a small `webop` command-line program.
 agent ⇄ webop mcp (stdio MCP) ⇄ per-profile Unix socket ⇄ webop native-host (Native Messaging) ⇄ extension ⇄ your tabs
 ```
 
-Current version: **0.6.2** (milestones M1–M6 done and manually accepted). macOS only for now.
+Current version: **0.7.0** (milestones M1–M6 done and manually accepted). macOS only for now.
 
 ## What the agent gets
 
-Eleven `browser_*` tools:
+Fourteen `browser_*` tools:
 
 | Tool | Purpose | Permission level |
 |---|---|---|
@@ -26,6 +26,9 @@ Eleven `browser_*` tools:
 | `browser_get_page_text` | Main content as plain text | `read` |
 | `browser_computer` | Screenshot, `zoom`, click / type / key / scroll / drag / hover | screenshot and zoom `read`, the rest `act` |
 | `browser_form_input` | Set a form field by ref (never echoes the value) | `act` |
+| `browser_read_network_requests` | Read recorded requests (URL, method, resource type, status only; credentials in URLs shown as `REDACTED`) | `read` |
+| `browser_read_console_messages` | Read console messages; recording starts on the first call; pass `pattern` to filter | `read` |
+| `browser_gif_creator` | `start_recording` / `stop_recording` / `export` / `clear`: record up to 50 frames with click markers and captions, saved to `~/Downloads/webop/` (override with `WEBOP_GIF_DIR`) | none (this agent's session only) |
 | `browser_javascript` | Run JavaScript in the page (off by default) | `javascript` |
 | `browser_profiles_list` | List online Chrome profiles | — |
 | `browser_profile_select` | Pick the profile this agent drives | — |
@@ -51,7 +54,7 @@ fnm use 26
 pnpm install
 pnpm -r build
 pnpm build:sea                         # builds the single executable apps/webop/dist/webop
-apps/webop/dist/webop --version        # webop 0.6.2
+apps/webop/dist/webop --version        # webop 0.7.0
 ```
 
 Register the Native Messaging host **before** loading the extension:
@@ -120,4 +123,4 @@ Automated tests never touch your own browser profile. Headless Chromium keeps re
 
 ## Not in v1
 
-Chrome Web Store / notarized distribution, Linux and Windows, GIF recording, reading console and network traffic, file upload, and closing a session's tabs automatically when it ends. The last four and cross-platform support are on the [roadmap](docs/roadmap.md).
+Chrome Web Store / notarized distribution, Linux and Windows, file upload, and closing a session's tabs automatically when it ends. The last two and cross-platform support are on the [roadmap](docs/roadmap.md).

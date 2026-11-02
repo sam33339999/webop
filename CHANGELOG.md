@@ -8,6 +8,13 @@
 
 版本規則：里程碑升 minor（M5 → 0.5.0）；里程碑內的修正與小功能升 patch（0.5.1、0.5.2…）。
 
+## 0.7.0 — 2026-11-02
+
+- 新增 `browser_read_network_requests`：agent 接手分頁後就開始記錄網路請求，只回傳網址、方法、資源類型與狀態，不含標頭與內容；網址裡的帳號密碼顯示為 `REDACTED`；跨網站導覽時清空緩衝。需要 `read` 授權。
+- 新增 `browser_read_console_messages`：第一次呼叫才開始記錄 console。原因是 `Runtime.enable` 會被反爬蟲腳本偵測到，平常不啟用。實測 Chrome 啟用時會重播先前的訊息（`console replay: yes`），所以第一次讀取就看得到頁面載入時的訊息。建議帶 `pattern` 過濾。需要 `read` 授權。
+- 新增 `browser_gif_creator`（`start_recording`／`stop_recording`／`export`／`clear`）：最多 50 張畫面，畫上點擊標記與每一步的繁體中文說明；輸入的文字不會顯示。GIF 由 native host 存到 `~/Downloads/webop/`，可用環境變數 `WEBOP_GIF_DIR` 改位置。
+- 變更：建立分頁改為先開 `about:blank`、附加 debugger，再導向網址，所以建立分頁時就會出現黃色的偵錯提示條（以前要到第一次操作才出現）。
+
 ## 0.6.2 — 2026-11-02
 
 - 修正：在真實瀏覽器裡，對 agent 開在背景的分頁點擊（沒先截圖）會在 3 秒逾時、點擊沒有落地。背景分頁不產生畫面，`Input.dispatchMouseEvent` 等不到處理；現在送輸入前會先開焦點模擬，分頁隱藏時再強制畫一張畫面（與截圖相同的做法）。headless 測試環境會照常渲染背景分頁，所以之前的 e2e 抓不到。
