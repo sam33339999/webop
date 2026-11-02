@@ -144,6 +144,23 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    tool: "gif_creator",
+    name: "browser_gif_creator",
+    description:
+      "Record this session's actions as an animated GIF. start_recording clears earlier frames and starts recording; take a " +
+      "browser_computer screenshot right after it so the GIF has a first frame. While recording, every browser_computer " +
+      "action that returns a screenshot (not zoom), browser_form_input, browser_navigate and browser_tabs_create adds a " +
+      "frame; recording covers the whole session (all its tabs, in order), up to 50 frames. Each frame shows a red marker " +
+      "where the next click lands and a caption of the step. Typed text and form values never appear in the GIF (only " +
+      "their length or the field). stop_recording stops and reports the frame count. export (stops recording first) saves " +
+      "the GIF as a file on the user's computer and returns its path; filename is optional. clear drops all frames." +
+      SAFETY,
+    shape: {
+      action: z.enum(["start_recording", "stop_recording", "export", "clear"]),
+      filename: z.string().optional(),
+    },
+  },
+  {
     tool: "profiles_list",
     name: "browser_profiles_list",
     description: "List the Chrome profiles that have this extension running (profile_id, label, selected)." + SAFETY,

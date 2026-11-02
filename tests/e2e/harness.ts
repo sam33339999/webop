@@ -124,3 +124,41 @@ export function jpegSize(buf: Buffer): { width: number; height: number } {
   }
   throw new Error("no SOF marker");
 }
+
+/** Logical screen size, frame count and per-frame delays (ms) of a GIF, read by walking its blocks. */
+export function gifInfo(buf: Buffer): { width: number; height: number; frames: number; delays: number[] } {
+  if (buf.subarray(0, 6).toString("latin1") !== "GIF89a") throw new Error("not a GIF89a");
+  const width = buf.readUInt16LE(6);
+  const height = buf.readUInt16LE(8);
+  const packed = buf[10];
+  let i = 13;
+  if (packed & 0x80) i += 3 * (1 << ((packed & 0x07) + 1));
+  const skipSubBlocks = () => {
+    while (i < buf.length) {
+      const n = buf[i++];
+      if (n === 0) return;
+      i += n;
+    }
+  };
+  let frames = 0;
+  const delays: number[] = [];
+  while (i < buf.length) {
+    const b = buf[i++];
+    if (b === 0x3b) return { width, height, frames, delays };
+    if (b === 0x21) {
+      const label = buf[i++];
+      if (label === 0xf9) delays.push(buf.readUInt16LE(i + 2) * 10);
+      skipSubBlocks();
+    } else if (b === 0x2c) {
+      frames++;
+      const p = buf[i + 8];
+      i += 9;
+      if (p & 0x80) i += 3 * (1 << ((p & 0x07) + 1));
+      i++; // LZW minimum code size
+      skipSubBlocks();
+    } else {
+      throw new Error(`unexpected block 0x${b.toString(16)} at ${i - 1}`);
+    }
+  }
+  throw new Error("GIF has no trailer");
+}

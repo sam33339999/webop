@@ -2,6 +2,7 @@ import { bumpStopEpoch, cancelSession, stopEpochOf } from "./callctx.ts";
 import { ensureInjected, sendWithInject } from "./inject.ts";
 import { attach, CdpError, detach, haltTab, onDetached, setTabGuard } from "./cdp.ts";
 import { forgetTab } from "./logs.ts";
+import { dropSession } from "./gif.ts";
 import { abortBackgroundAsks, revokeSessionGrants } from "./permissions.ts";
 import type { Budget } from "@webop/core/budget";
 
@@ -118,7 +119,11 @@ async function endSessions(pick: (id: string, st: SessionState) => boolean, also
     await persist(s);
     return { tabIds: out, ended: [...ids] };
   });
-  for (const id of ended) abortBackgroundAsks(id);
+  for (const id of ended) {
+    abortBackgroundAsks(id);
+    // Unexported GIF frames die with the session.
+    dropSession(id);
+  }
   for (const id of tabIds) lit.delete(id);
   // allSettled: a storage failure while revoking must not skip detaching the tabs.
   await Promise.allSettled([

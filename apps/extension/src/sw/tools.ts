@@ -1,7 +1,8 @@
 import { sendWithInject } from "./inject.ts";
 import type { ContentBlock, ToolCall, ToolResult } from "@webop/core/protocol";
 import { CdpError, dialogError, dropDetachNoticeSince, inputsSentTo, isAttached, isDialogOpen, notePageChange, rawCommand, resumeTab, send, stoppedError, takeDetachNotice, timeouts } from "./cdp.ts";
-import { toViewport } from "@webop/core/coords";
+import { fromViewport, toViewport, type ScreenshotContext } from "@webop/core/coords";
+import { GIF_MAX_FRAMES, type GifStep } from "@webop/core/gif";
 import { getContext, prepareForInput, screenshot, withStopButtonHidden, zoom } from "./capture.ts";
 import { click, drag, hover, pressKeys, scroll, typeText } from "./input.ts";
 import { assertLive, assertOwned, budgetOf, clientNameOf, createTab, ensureSession, isOwned, listTabs, showGlow } from "./sessions.ts";
@@ -12,8 +13,9 @@ import { promptTimeouts } from "./prompt.ts";
 import { levelFor, type Level } from "@webop/core/grants";
 import { formatConsole, formatNetwork, parsePattern, queryConsole, queryNetwork } from "@webop/core/logs";
 import { consoleEnabled, consoleLog, enableConsole, networkLog, takeNotes } from "./logs.ts";
+import { clear as clearGif, exportGif, frameCount, isCapped, isRecording, record, start as startGif, stop as stopGif } from "./gif.ts";
 
-type Outcome = { content: ContentBlock[] };
+type Outcome = { content: ContentBlock[]; file?: { name: string; data: string } };
 
 /** Dev-only seams for e2e tests (see the `__webop` hook); never set in a production build. */
 export const devHooks: { afterTarget?: (tabId: number) => Promise<void> } = {};
@@ -150,7 +152,14 @@ function markerFor(action: string, tabId: number, args: Record<string, unknown>)
   return "oobError" in r ? undefined : { x: r.viewport[0], y: r.viewport[1] };
 }
 
-async function perform(action: string, tabId: number, args: Record<string, unknown>, g: InputGuard): Promise<void> {
+/** Where an input action actually landed (viewport CSS px), with the screenshot context in force before input went out. */
+interface Aimed {
+  point?: [number, number];
+  to?: [number, number];
+  ctx?: ScreenshotContext;
+}
+
+async function perform(action: string, tabId: number, args: Record<string, unknown>, g: InputGuard): Promise<Aimed> {
   const target = () => guardedTarget(tabId, args, "coordinate", "ref");
   /** Resolves the single target, then re-checks the site. */
   const aim = async (): Promise<[number, number]> => {
@@ -158,53 +167,98 @@ async function perform(action: string, tabId: number, args: Record<string, unkno
     await g.beforeInput();
     return p;
   };
+  /** Runs the input for `point` and reports it, with the context read before the input. */
+  const at = async (point: [number, number], input: (x: number, y: number) => Promise<void>): Promise<Aimed> => {
+    const ctx = getContext(tabId);
+    await input(...point);
+    return { point, ctx };
+  };
   switch (action) {
-    case "left_click": return click(tabId, ...(await aim()));
-    case "right_click": return click(tabId, ...(await aim()), { button: "right" });
-    case "double_click": return click(tabId, ...(await aim()), { count: 2 });
-    case "hover": return hover(tabId, ...(await aim()));
+    case "left_click": return at(await aim(), (x, y) => click(tabId, x, y));
+    case "right_click": return at(await aim(), (x, y) => click(tabId, x, y, { button: "right" }));
+    case "double_click": return at(await aim(), (x, y) => click(tabId, x, y, { count: 2 }));
+    case "hover": return at(await aim(), (x, y) => hover(tabId, x, y));
     case "scroll_to": {
       if (args.ref === undefined) invalid("scroll_to requires ref.");
       // scrollIntoView changes the page without any Input.*; count it as an action that began.
       notePageChange(tabId);
       await refPoint(tabId, args.ref);
       await g.beforeInput();
-      return;
+      return {};
     }
     case "left_click_drag": {
       const from = await guardedTarget(tabId, args, "start_coordinate", "start_ref");
       const to = await target();
       await g.beforeInput();
-      return drag(tabId, from, to);
+      const ctx = getContext(tabId);
+      await drag(tabId, from, to);
+      return { point: from, to, ctx };
     }
     case "type": {
       const text = textArg(args);
       await assertNotCrossSiteFrame(tabId);
       await g.beforeInput();
-      return typeText(tabId, text);
+      await typeText(tabId, text);
+      return {};
     }
     case "key": {
       const combo = textArg(args);
       await assertNotCrossSiteFrame(tabId);
       await g.beforeInput();
       try {
-        return await pressKeys(tabId, combo);
+        await pressKeys(tabId, combo);
       } catch (e) {
         if (e instanceof CdpError) throw e;
         invalid(e instanceof Error ? e.message : String(e));
       }
-      return;
+      return {};
     }
     case "scroll": {
-      const [x, y] = await aim();
+      const p = await aim();
       const dir = args.scroll_direction;
       if (dir !== "up" && dir !== "down" && dir !== "left" && dir !== "right") invalid("scroll_direction must be up, down, left or right.");
       const amount = args.scroll_amount ?? 3;
       if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) invalid("scroll_amount must be a positive number.");
-      return scroll(tabId, x, y, dir, amount);
+      return at(p, (x, y) => scroll(tabId, x, y, dir, amount));
     }
     default:
       invalid(`Unknown computer action: ${action}`);
+  }
+}
+
+/**
+ * The GIF step of a computer action. Points are mapped from viewport px into the screenshot frame that was in force
+ * before the input, which is the frame the marker is drawn on. Typed text is never kept, only its length.
+ */
+function stepFor(action: string, args: Record<string, unknown>, aimed: Aimed): GifStep {
+  const shot = (p?: [number, number]): [number, number] | undefined =>
+    p && aimed.ctx && aimed.ctx.viewportWidth > 0 && aimed.ctx.viewportHeight > 0 ? fromViewport(p[0], p[1], aimed.ctx) : undefined;
+  switch (action) {
+    case "left_click":
+    case "right_click":
+    case "double_click":
+    case "hover": {
+      const step: GifStep = { kind: action, point: shot(aimed.point) };
+      if (typeof args.ref === "string") step.ref = args.ref;
+      return step;
+    }
+    case "left_click_drag":
+      return { kind: "left_click_drag", point: shot(aimed.point), to: shot(aimed.to) };
+    case "type":
+      return { kind: "type", chars: typeof args.text === "string" ? args.text.length : 0 };
+    case "key":
+      return { kind: "key", keys: String(args.text) };
+    case "scroll":
+      return {
+        kind: "scroll",
+        point: shot(aimed.point),
+        direction: args.scroll_direction as "up" | "down" | "left" | "right",
+        amount: typeof args.scroll_amount === "number" ? args.scroll_amount : 3,
+      };
+    case "scroll_to":
+      return { kind: "scroll_to", ref: String(args.ref) };
+    default:
+      return { kind: "screenshot" };
   }
 }
 
@@ -429,7 +483,25 @@ async function navigate(session_id: string, args: Record<string, unknown>, ctx: 
     }
     throw afterStart(e, ctx, lead);
   }
+  await recordExtraFrame(session_id, tabId, ctx, { kind: "navigate", url: final });
   return { content: [{ type: "text", text: `Navigated to ${final}` }] };
+}
+
+/**
+ * While the session records a GIF, navigate and tabs_create add a frame of their own (they return no screenshot).
+ * The picture is not handed to the agent and does not replace its coordinate frame; any failure just means no frame.
+ */
+async function recordExtraFrame(session_id: string, tabId: number, ctx: CallContext, step: GifStep): Promise<void> {
+  if (!isRecording(session_id) || ctx.stopped()) return;
+  try {
+    const { block, ctx: shotCtx } = await screenshot(tabId, { store: false, budget: await budgetOf(session_id) });
+    // The frame ends up in a file the user shares: only keep it if the tab is still on a site this session may read.
+    const url = await currentUrl(tabId);
+    if (ctx.stopped() || (await accessState(session_id, url, "read")) !== "allow") return;
+    record(session_id, tabId, url, block, shotCtx, step);
+  } catch {
+    // Best effort: the navigation itself succeeded.
+  }
 }
 
 /** Errors that mean more than "the capture failed": they must never be reported as a successful action. */
@@ -509,6 +581,7 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
         closed = true;
         throw e;
       }
+      await recordExtraFrame(call.session_id, tab_id, ctx, { kind: "tabs_create", url: landed });
       // The URL that was just checked, not a fresh read.
       return { content: [{ type: "text", text: JSON.stringify({ tab_id, url: landed }) }] };
     } catch (e) {
@@ -572,8 +645,9 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       }
       const inputsBefore = inputsSentTo(tabId);
       try {
+        let aimed: Aimed = {};
         if (performed) {
-          await withStopButtonHidden(tabId, () => perform(action, tabId, call.args, guard));
+          aimed = await withStopButtonHidden(tabId, () => perform(action, tabId, call.args, guard));
           await settle(tabId);
         }
         // The input opened a dialog: the page's script thread is frozen until the user dismisses it. The action did land.
@@ -593,10 +667,11 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
           const why = e instanceof Error ? e.message : String(e);
           return { content: [{ type: "text", text: `Action performed; screenshot failed: ${why}${blocked ? dialogNote : ""}` }] };
         }
-        await recheck(call.session_id, tabId, performed, ctx);
+        const shownUrl = await recheck(call.session_id, tabId, performed, ctx);
         // The user may have pressed stop while we were busy; the result is withheld.
         if (ctx.stopped()) throw stoppedError();
         const { block, ctx: shotCtx } = shot;
+        record(call.session_id, tabId, shownUrl, block, shotCtx, stepFor(action, call.args, aimed));
         return { content: [{ type: "text", text: `Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.${blocked ? dialogNote : ""}` }, block] };
       } catch (caught) {
         const e = viaStop(caught, ctx);
@@ -638,7 +713,72 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     // Queues behind the tab only for the first read, which attaches and starts the recording.
     return readConsole(call, ctx);
   }
+  if (call.tool === "gif_creator") {
+    return gifCreator(call);
+  }
   invalid(`Unknown tool: ${String(call.tool)}`);
+}
+
+const CAP_NOTE = ` The ${GIF_MAX_FRAMES}-frame limit was reached; later actions were not recorded.`;
+
+/** Local time as YYYYMMDD-HHMMSS. */
+function stamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/** The client name reduced to characters that are safe in a file name. */
+function fileSafe(name: string): string {
+  const s = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40);
+  return s || "agent";
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(bin);
+}
+
+/**
+ * GIF recording of the whole session. No per-site grant: every frame is a screenshot another (gated) tool already took.
+ * export hands the GIF back as `file`; the native host writes it to disk.
+ */
+async function gifCreator(call: ToolCall): Promise<Outcome> {
+  const sid = call.session_id;
+  const { action, filename } = call.args;
+  if (filename !== undefined && (typeof filename !== "string" || filename === "")) invalid("filename must be a non-empty string.");
+  const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+  switch (action) {
+    case "start_recording":
+      if (isRecording(sid)) return text(`Already recording (${frameCount(sid)} frames so far); nothing was cleared.`);
+      startGif(sid);
+      return text("Recording started. Take a browser_computer screenshot now so the GIF has a first frame; every later action that returns a screenshot (and each navigation) adds a frame.");
+    case "stop_recording": {
+      const n = stopGif(sid);
+      return text(`Recording stopped; ${n} frames.${isCapped(sid) ? CAP_NOTE : ""}`);
+    }
+    case "clear":
+      clearGif(sid);
+      return text("All frames cleared.");
+    case "export": {
+      stopGif(sid);
+      let out: Awaited<ReturnType<typeof exportGif>>;
+      try {
+        out = await exportGif(sid);
+      } catch (e) {
+        if (e instanceof CdpError) throw e;
+        throw new CdpError("export_failed", `Could not encode the GIF: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const name = typeof filename === "string" ? filename : `webop-${fileSafe(await clientNameOf(sid))}-${stamp(new Date())}.gif`;
+      return {
+        ...text(`Exported ${out.frames} frames.${out.capped ? CAP_NOTE : ""}`),
+        file: { name, data: toBase64(out.bytes) },
+      };
+    }
+    default:
+      invalid("action must be start_recording, stop_recording, export or clear.");
+  }
 }
 
 async function readPage(call: ToolCall, ctx: CallContext): Promise<Outcome> {
@@ -712,9 +852,10 @@ async function formInput(call: ToolCall, ctx: CallContext): Promise<Outcome> {
     if (e instanceof CdpError && NOT_A_CAPTURE_FAILURE.has(e.code)) throw e;
     return { content: [{ type: "text", text: `${done} Screenshot failed: ${e instanceof Error ? e.message : String(e)}` }] };
   }
-  await recheck(call.session_id, tabId, true, ctx);
+  const shownUrl = await recheck(call.session_id, tabId, true, ctx);
   if (ctx.stopped()) throw new CdpError("stopped_by_user", "The field WAS set: the user pressed stop.");
   const { block, ctx: shotCtx } = shot;
+  record(call.session_id, tabId, shownUrl, block, shotCtx, { kind: "form_input", ref });
   return { content: [{ type: "text", text: `${done} Screenshot ${shotCtx.screenshotWidth}x${shotCtx.screenshotHeight} px; use this frame for coordinates.` }, block] };
 }
 
@@ -888,7 +1029,7 @@ export async function dispatch(call: ToolCall): Promise<ToolResult> {
     if (ctx.stopped()) {
       // Reads changed nothing; navigations and tab changes did happen even though the result is withheld.
       const readOnly = call.tool === "read_page" || call.tool === "get_page_text" || call.tool === "tabs_list" ||
-        call.tool === "read_network_requests" || call.tool === "read_console_messages" ||
+        call.tool === "read_network_requests" || call.tool === "read_console_messages" || call.tool === "gif_creator" ||
         (call.tool === "computer" && READ_ACTIONS.has(String(call.args.action)));
       throw readOnly ? stoppedError() : new CdpError("stopped_by_user", "The action may have been partially or fully performed: the user pressed stop.");
     }

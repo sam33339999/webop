@@ -8,7 +8,8 @@
     "build:dev": "node build.ts --dev"
   },
   "dependencies": {
-    "@webop/core": "workspace:*"
+    "@webop/core": "workspace:*",
+    "gifenc": "1.0.3"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.0",
