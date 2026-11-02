@@ -108,3 +108,14 @@ test("query limit is clamped to >= 0", () => {
   nl.push(n({}));
   assert.equal(queryNetwork(nl, { limit: -5 }).entries.length, 0);
 });
+
+test("RingLog.clearSeen removes only the snapshot and keeps later entries", () => {
+  const l = new RingLog<{ v: number }>(2);
+  for (let i = 1; i <= 3; i++) l.push({ v: i });
+  assert.equal(l.dropped, 1);
+  const seen = l.all();
+  l.push({ v: 4 });
+  l.clearSeen(seen);
+  assert.deepEqual(l.all().map((e) => e.v), [4]);
+  assert.equal(l.dropped, 0);
+});

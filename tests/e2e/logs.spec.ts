@@ -149,3 +149,128 @@ test("t_net_no_runtime_enable: recording the network never enables the Runtime d
   assert.ok(sent.includes(`${tab_id} Network.enable`), sent.join("\n"));
   assert.ok(!sent.includes(`${tab_id} Runtime.enable`), sent.join("\n"));
 });
+
+test("t_net_redirect302_away_and_back: a server-side 302 hop through another site leaves nothing of it behind", async () => {
+  const h = await open({ localhost: ["act"], "127.0.0.1": ["act"] });
+  const tab_id = await openLogs(h);
+  const back = `${h.baseUrl}/logs.html`;
+  await call(h.sw, "navigate", { tab_id, url: `${h.altUrl}/redirect302?to=${encodeURIComponent(back)}` });
+  await waitForUrl(h, tab_id, back);
+  await sleep(200);
+  const lines = entries(textOf(await readNet(h, tab_id)));
+  assert.ok(lines.some((l) => l.includes("logs.html")), lines.join("\n"));
+  const hop = lines.filter((l) => l.includes(`127.0.0.1:${new URL(h.altUrl).port}`));
+  assert.deepEqual(hop, [], lines.join("\n"));
+  assert.equal(lines.filter((l) => /document \S*\/logs\.html$/.test(l)).length, 1, lines.join("\n"));
+});
+
+// ---- console ----
+
+const readCon = (h: Launched, tab_id: number, args: object = {}) => call(h.sw, "read_console_messages", { tab_id, ...args });
+const devSent = (h: Launched) => h.sw.evaluate(() => [...(globalThis as any).__webop.devSent] as string[]);
+const countOf = (sent: string[], line: string) => sent.filter((s) => s === line).length;
+const isAttachedByUs = (h: Launched, tab_id: number) =>
+  h.sw.evaluate((id) => chrome.debugger.getTargets().then((ts) => ts.some((t) => t.tabId === id && t.attached && t.extensionId === chrome.runtime.id)), tab_id);
+
+/** Screenshot first (coordinates are screenshot-frame), then clicks the #b button of logs.html. */
+async function clickLogButton(h: Launched, tab_id: number): Promise<void> {
+  textOf(await call(h.sw, "computer", { action: "screenshot", tab_id }));
+  const page = h.context.pages().find((p) => p.url().includes("/logs.html"));
+  assert.ok(page);
+  const ctx = await h.sw.evaluate((id) => (globalThis as any).__webop.getContext(id), tab_id);
+  const r = await page.evaluate(() => {
+    const b = document.querySelector("#b")!.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  });
+  const coordinate = [(r.x * ctx.screenshotWidth) / ctx.viewportWidth, (r.y * ctx.screenshotHeight) / ctx.viewportHeight];
+  textOf(await call(h.sw, "computer", { action: "left_click", tab_id, coordinate }));
+}
+
+test("t_console_lazy: Runtime is enabled only by the first console read", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  assert.ok(!(await devSent(h)).includes(`${tab_id} Runtime.enable`));
+  const text = textOf(await readCon(h, tab_id));
+  assert.ok((await devSent(h)).includes(`${tab_id} Runtime.enable`));
+  assert.ok(text.includes("Console recording started now"), text);
+  console.log(`console replay: ${text.includes("boot-log") ? "yes" : "no"}`);
+  const again = textOf(await readCon(h, tab_id));
+  assert.ok(!again.includes("Console recording started now"), again);
+  assert.equal(countOf(await devSent(h), `${tab_id} Runtime.enable`), 1);
+});
+
+test("t_console_after_enable: logs and exceptions (with stack) after enabling are recorded", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await clickLogButton(h, tab_id);
+  await sleep(300);
+  const text = textOf(await readCon(h, tab_id));
+  assert.ok(text.includes("[log] clicked-log"), text);
+  const lines = text.split("\n");
+  const ex = lines.findIndex((l) => l.startsWith("[exception]") && l.includes("late-boom"));
+  assert.ok(ex >= 0, text);
+  assert.ok(lines.slice(ex + 1).some((l) => /^ {4}at .+\(.+logs\.html:\d+:\d+\)$/.test(l)), text);
+  // The stack is listed once, below the message, not also inside the message text.
+  // (V8's own "at url:line:col" lines inside the description would show up as ":line:col (".)
+  assert.ok(!lines.some((l) => /:\d+:\d+ \(/.test(l)), text);
+});
+
+test("t_console_filters: only_errors, pattern and invalid patterns", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await clickLogButton(h, tab_id);
+  await sleep(300);
+  const errs = textOf(await readCon(h, tab_id, { only_errors: true }));
+  assert.ok(!errs.includes("clicked-log"), errs);
+  assert.ok(errs.includes("late-boom"), errs);
+  const one = entries(textOf(await readCon(h, tab_id, { pattern: "CLICKED" })));
+  assert.equal(one.length, 1, one.join("\n"));
+  assert.equal(errOf(await readCon(h, tab_id, { pattern: "(" })).code, "invalid_pattern");
+  for (const limit of [0, -1, 1.5, "2"]) assert.equal(errOf(await readCon(h, tab_id, { limit })).code, "invalid_args", `limit ${limit}`);
+  assert.equal(errOf(await readCon(h, tab_id, { only_errors: "yes" })).code, "invalid_args");
+  assert.equal(errOf(await readCon(h, tab_id, { pattern: 3 })).code, "invalid_args");
+  assert.equal(errOf(await call(h.sw, "read_console_messages", {})).code, "invalid_args");
+});
+
+test("t_console_redact: credentials in logged URLs are redacted", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await clickLogButton(h, tab_id);
+  await sleep(300);
+  const text = textOf(await readCon(h, tab_id));
+  assert.ok(text.includes("token=REDACTED"), text);
+  assert.ok(!text.includes("zzz"), text);
+});
+
+test("t_console_clear: clear empties the console buffer after this read", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await clickLogButton(h, tab_id);
+  await sleep(300);
+  const first = textOf(await readCon(h, tab_id, { clear: true }));
+  assert.ok(first.includes("clicked-log"), first);
+  const second = textOf(await readCon(h, tab_id));
+  assert.match(second, /^0 matching/, second);
+});
+
+test("t_console_stop_then_resume: a stopped tab is read from the buffer without attaching; the next action re-enables Runtime", async () => {
+  const h = await open();
+  const tab_id = await openLogs(h);
+  textOf(await readCon(h, tab_id));
+  await h.sw.evaluate(() => (globalThis as any).__webop.stopSession("test"));
+  const paused = textOf(await readCon(h, tab_id));
+  assert.ok(paused.includes("recording is paused"), paused);
+  assert.equal(await isAttachedByUs(h, tab_id), false);
+  assert.equal(countOf(await devSent(h), `${tab_id} Runtime.enable`), 1);
+  textOf(await call(h.sw, "computer", { action: "screenshot", tab_id }));
+  assert.equal(countOf(await devSent(h), `${tab_id} Runtime.enable`), 2);
+  // Both readers learn about the gap, whichever reads first.
+  const net = textOf(await readNet(h, tab_id));
+  assert.ok(net.includes("nothing was recorded between"), net);
+  const con = textOf(await readCon(h, tab_id));
+  assert.ok(con.includes("nothing was recorded between"), con);
+});

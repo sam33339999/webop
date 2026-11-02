@@ -10,8 +10,8 @@ import { accessState, askInBackground, deniedError, isSiteReadable, requireAcces
 import { openCallContext, PENDING_MARGIN_MS, type CallContext } from "./callctx.ts";
 import { promptTimeouts } from "./prompt.ts";
 import { levelFor, type Level } from "@webop/core/grants";
-import { formatNetwork, queryNetwork } from "@webop/core/logs";
-import { networkLog, takeNotes } from "./logs.ts";
+import { formatConsole, formatNetwork, parsePattern, queryConsole, queryNetwork } from "@webop/core/logs";
+import { consoleEnabled, consoleLog, enableConsole, networkLog, takeNotes } from "./logs.ts";
 
 type Outcome = { content: ContentBlock[] };
 
@@ -490,7 +490,8 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
       // The tab opened blank with recording already on; loading the URL now captures its very first request.
       await afterLoad(tab_id, () => chrome.tabs.update(tab_id, { url }));
       // Drop the blank start page from history, so "back" never leads to it (and history looks as if the tab opened at the URL).
-      if (isAttached(tab_id)) await rawCommand(tab_id, "Page.resetNavigationHistory").catch(() => {});
+      // Not after a stop: the user took the tab back, so nothing more is sent to it.
+      if (!ctx.stopped() && isAttached(tab_id)) await rawCommand(tab_id, "Page.resetNavigationHistory").catch(() => {});
       let landed: string;
       try {
         landed = await currentUrl(tab_id);
@@ -632,6 +633,10 @@ async function run(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   if (call.tool === "read_network_requests") {
     // Outside withTab: it only reads the in-memory buffer and must never attach to (or queue behind) the tab.
     return readNetwork(call, ctx);
+  }
+  if (call.tool === "read_console_messages") {
+    // Queues behind the tab only for the first read, which attaches and starts the recording.
+    return readConsole(call, ctx);
   }
   invalid(`Unknown tool: ${String(call.tool)}`);
 }
@@ -804,7 +809,8 @@ function optLimit(args: Record<string, unknown>): number | undefined {
 
 /**
  * Network requests recorded since the tab was taken over (read level, checked against the tab's current URL). Reads
- * the buffer only: never attaches, never sends CDP. `clear` empties the buffer after this call's answer is produced.
+ * the buffer only: never attaches, never sends CDP. `clear` removes what this call saw once its answer is produced;
+ * entries that arrived meanwhile stay for the next read.
  */
 async function readNetwork(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   const tabId = tabIdOf(call.args);
@@ -816,14 +822,54 @@ async function readNetwork(call: ToolCall, ctx: CallContext): Promise<Outcome> {
   await assertOwned(call.session_id, tabId);
   await requireReadable(call.session_id, tabId, ctx);
   const log = networkLog(tabId);
+  const seen = log.all();
   const r = queryNetwork(log, { urlPattern, resourceType, onlyFailed, limit });
   const dropped = log.dropped;
   await assertLive(call.session_id);
   await recheck(call.session_id, tabId, false, ctx);
   // A stopped call hands nothing back, so it must not empty the buffer either.
   if (ctx.stopped()) throw stoppedError();
-  const text = formatNetwork({ ...r, dropped, notes: takeNotes(tabId) });
-  if (clear) log.clear();
+  const text = formatNetwork({ ...r, dropped, notes: takeNotes(tabId, "network") });
+  if (clear) log.clearSeen(seen);
+  return { content: [{ type: "text", text }] };
+}
+
+const CONSOLE_STARTED = "Console recording started now; messages logged before this call are only shown if the browser replayed them.";
+
+/**
+ * Console messages of a tab (read level, checked against the tab's current URL). The first read on a tab starts the
+ * recording (attaching if needed); later reads only read the buffer, and never re-attach a tab the user took back.
+ */
+async function readConsole(call: ToolCall, ctx: CallContext): Promise<Outcome> {
+  const tabId = tabIdOf(call.args);
+  const source = optString(call.args, "pattern");
+  const onlyErrors = optBool(call.args, "only_errors");
+  const clear = optBool(call.args, "clear");
+  const limit = optLimit(call.args);
+  await assertOwned(call.session_id, tabId);
+  await requireReadable(call.session_id, tabId, ctx);
+  let pattern: RegExp | undefined;
+  if (source !== undefined) {
+    try {
+      pattern = parsePattern(source);
+    } catch (e) {
+      throw new CdpError("invalid_pattern", e instanceof Error ? e.message : String(e));
+    }
+  }
+  const notes: string[] = [];
+  if (!consoleEnabled(tabId)) {
+    await withTab(tabId, ctx, () => enableConsole(tabId));
+    notes.push(CONSOLE_STARTED);
+  }
+  const log = consoleLog(tabId);
+  const seen = log.all();
+  const r = queryConsole(log, { pattern, onlyErrors, limit });
+  const dropped = log.dropped;
+  await assertLive(call.session_id);
+  await recheck(call.session_id, tabId, false, ctx);
+  if (ctx.stopped()) throw stoppedError();
+  const text = formatConsole({ ...r, dropped, notes: [...notes, ...takeNotes(tabId, "console")] });
+  if (clear) log.clearSeen(seen);
   return { content: [{ type: "text", text }] };
 }
 

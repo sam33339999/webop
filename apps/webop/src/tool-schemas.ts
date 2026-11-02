@@ -81,6 +81,25 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
   {
+    tool: "read_console_messages",
+    name: "browser_read_console_messages",
+    description:
+      "List the console messages and uncaught exceptions of a tab, oldest first. Recording starts on the first call for " +
+      "the tab, so messages logged before it may be missing. Pass a pattern to keep the output small. pattern is a " +
+      "case-insensitive regular expression matched against the message text, only_errors keeps errors and exceptions, " +
+      "limit returns the newest N (default 100), clear empties the list after this read. Exceptions include their stack. " +
+      "Credentials in URLs are shown as REDACTED; other values the page logs are not. Moving the tab to another site " +
+      "clears the list." +
+      SAFETY,
+    shape: {
+      tab_id: z.number(),
+      pattern: z.string().optional(),
+      only_errors: z.boolean().optional(),
+      limit: z.number().optional(),
+      clear: z.boolean().optional(),
+    },
+  },
+  {
     tool: "form_input",
     name: "browser_form_input",
     description:

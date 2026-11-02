@@ -19,7 +19,13 @@ async function closedPort(): Promise<number> {
 export async function startServer(): Promise<{ port: number; server: Server; close(): Promise<void> }> {
   const refusedPort = await closedPort();
   const server = createServer(async (req, res) => {
-    const path = new URL(req.url ?? "/", "http://x").pathname;
+    const parsed = new URL(req.url ?? "/", "http://x");
+    const path = parsed.pathname;
+    // Server-side redirect: /redirect302?to=<absolute url>.
+    if (path === "/redirect302") {
+      res.writeHead(302, { location: parsed.searchParams.get("to") ?? "/" }).end();
+      return;
+    }
     const status = /^\/status\/(\d{3})$/.exec(path);
     if (status) {
       res.writeHead(Number(status[1]), { "content-type": "text/plain" }).end(`status ${status[1]}`);

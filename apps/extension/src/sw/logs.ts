@@ -1,6 +1,8 @@
-import { makeNetworkEntry, RingLog, type ConsoleEntry, type NetworkEntry } from "@webop/core/logs";
+import { makeConsoleEntry, makeNetworkEntry, RingLog, type ConsoleEntry, type NetworkEntry } from "@webop/core/logs";
 import { siteOf } from "@webop/core/domain";
-import { isAttached, onAttached, onDetached, rawCommand } from "./cdp.ts";
+import { attach, isAttached, isControllable, onAttached, onDetached, rawCommand } from "./cdp.ts";
+
+export type LogKind = "network" | "console";
 
 /**
  * Per-tab console and network buffers, filled from CDP events while we hold the tab's debugger. Memory only: a
@@ -15,15 +17,15 @@ interface TabLogs {
   topFrame?: string;
   /** When recording stopped (our attachment ended); unset while attached. */
   pausedSince?: number;
-  /** Recording gaps not yet reported to a reader. */
-  gaps: string[];
+  /** Recording gaps not yet reported, per reader: each read tool sees every gap since its own last read. */
+  gaps: Record<LogKind, string[]>;
 }
 
 const tabs = new Map<number, TabLogs>();
 
 function logsOf(tabId: number): TabLogs {
   let t = tabs.get(tabId);
-  if (!t) tabs.set(tabId, (t = { network: new RingLog(), console: new RingLog(), gaps: [] }));
+  if (!t) tabs.set(tabId, (t = { network: new RingLog(), console: new RingLog(), gaps: { network: [], console: [] } }));
   return t;
 }
 
@@ -35,17 +37,37 @@ export function consoleLog(tabId: number): RingLog<ConsoleEntry> {
   return logsOf(tabId).console;
 }
 
+/**
+ * Tabs whose console is recorded: `Runtime.enable` is sent only after the first console read asked for it (it is a
+ * known bot-detection signal), and again on each later attach. Memory only; a service-worker restart forgets it.
+ */
+const consoleOn = new Set<number>();
+
+export function consoleEnabled(tabId: number): boolean {
+  return consoleOn.has(tabId);
+}
+
+/** Starts console recording on the tab, attaching if needed. Callers run it inside the tab's call queue. */
+export async function enableConsole(tabId: number): Promise<void> {
+  // Two first reads queued at once: the second finds it done.
+  if (consoleOn.has(tabId)) return;
+  await attach(tabId);
+  await rawCommand(tabId, "Runtime.enable");
+  consoleOn.add(tabId);
+}
+
 export function forgetTab(tabId: number): void {
   tabs.delete(tabId);
+  consoleOn.delete(tabId);
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** Returns (and forgets) the gaps since the last read, plus a note while recording is paused right now. */
-export function takeNotes(tabId: number): string[] {
+/** Returns (and forgets) the gaps since this kind's last read, plus a note while recording is paused right now. */
+export function takeNotes(tabId: number, kind: LogKind): string[] {
   const t = logsOf(tabId);
-  const notes = t.gaps;
-  t.gaps = [];
+  const notes = t.gaps[kind];
+  t.gaps[kind] = [];
   if (!isAttached(tabId)) {
     const why = t.pausedSince !== undefined ? ` since ${iso(t.pausedSince)} (debugger detached)` : " (debugger not attached)";
     notes.push(`Note: recording is paused${why}; it resumes on the next browser action on this tab.`);
@@ -65,16 +87,21 @@ function noteSite(t: TabLogs, url: string): void {
 }
 
 onAttached(async (tabId) => {
+  // An attach that finished after the tab's session ended (and its buffers were forgotten) must not recreate them.
+  if (!isControllable(tabId)) return;
   const t = logsOf(tabId);
   const now = Date.now();
   if (t.pausedSince !== undefined) {
-    t.gaps.push(`Note: nothing was recorded between ${iso(t.pausedSince)} and ${iso(now)} (debugger detached).`);
+    const gap = `Note: nothing was recorded between ${iso(t.pausedSince)} and ${iso(now)} (debugger detached).`;
+    t.gaps.network.push(gap);
+    if (consoleOn.has(tabId)) t.gaps.console.push(gap);
     t.pausedSince = undefined;
   }
   // The tab may have moved to another site while we were not listening.
   const url = await chrome.tabs.get(tabId).then((tab) => tab.url ?? "", () => "");
   noteSite(t, url);
   await rawCommand(tabId, "Network.enable", { maxPostDataSize: 0 }).catch(() => {});
+  if (consoleOn.has(tabId)) await rawCommand(tabId, "Runtime.enable").catch(() => {});
   const tree = await rawCommand(tabId, "Page.getFrameTree").catch(() => undefined) as { frameTree?: { frame?: { id?: string } } } | undefined;
   const id = tree?.frameTree?.frame?.id;
   if (id !== undefined) t.topFrame = id;
@@ -89,11 +116,45 @@ chrome.tabs.onRemoved.addListener((tabId) => forgetTab(tabId));
 
 type RequestWillBeSent = {
   requestId: string;
+  loaderId?: string;
   frameId?: string;
   type?: string;
   request: { url: string; method: string };
   redirectResponse?: { status: number };
 };
+
+type RemoteObject = { type?: string; value?: unknown; unserializableValue?: string; description?: string };
+type CallFrame = { functionName?: string; url: string; lineNumber: number; columnNumber: number };
+type StackTrace = { callFrames?: CallFrame[] };
+type ExceptionDetails = {
+  text: string; url?: string; lineNumber: number; columnNumber: number; stackTrace?: StackTrace; exception?: RemoteObject;
+};
+
+/** One console argument as text: its value (strings as-is, others JSON), else its unserializable value or description. */
+function argText(a: RemoteObject): string {
+  if (a.value !== undefined) {
+    if (typeof a.value === "string") return a.value;
+    try {
+      return JSON.stringify(a.value) ?? String(a.value);
+    } catch {
+      return String(a.value);
+    }
+  }
+  return a.unserializableValue ?? a.description ?? (a.type === "undefined" ? "undefined" : "");
+}
+
+/** Drops the trailing "    at ..." lines of a V8 error description. */
+function withoutStack(description: string): string {
+  const lines = description.split("\n");
+  while (lines.length > 1 && /^\s+at\s/.test(lines[lines.length - 1])) lines.pop();
+  return lines.join("\n");
+}
+
+/** Source location (1-based line and column, as DevTools shows them); none for script without a URL. */
+function sourceOf(f: CallFrame | undefined): Pick<ConsoleEntry, "url" | "line" | "column"> {
+  if (!f || !f.url) return {};
+  return { url: f.url, line: f.lineNumber + 1, column: f.columnNumber + 1 };
+}
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   const tabId = source.tabId;
@@ -104,7 +165,9 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     const p = params as RequestWillBeSent;
     const url = p.request.url;
     if (/^(data|blob):/i.test(url)) return;
-    if (p.type === "Document" && p.frameId !== undefined && p.frameId === t.topFrame) noteSite(t, url);
+    // Until the top frame id is known, any document load (requestId === loaderId) may be top-level: err on clearing.
+    const top = t.topFrame !== undefined ? p.frameId !== undefined && p.frameId === t.topFrame : p.requestId === p.loaderId;
+    if (p.type === "Document" && top) noteSite(t, url);
     if (p.redirectResponse) {
       const prev = t.network.find((e) => e.requestId === p.requestId);
       if (prev) prev.status = p.redirectResponse.status;
@@ -121,6 +184,28 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     const e = t.network.find((x) => x.requestId === p.requestId);
     // A request cancelled after its response arrived (e.g. an unread fetch body) keeps the HTTP status it got.
     if (e && !(p.canceled === true && e.status !== undefined)) e.failed = p.errorText;
+  } else if (method === "Runtime.consoleAPICalled") {
+    const p = params as { type: string; args?: RemoteObject[]; stackTrace?: StackTrace };
+    t.console.push(makeConsoleEntry({
+      type: p.type === "warning" ? "warn" : p.type,
+      text: (p.args ?? []).map(argText).join(" "),
+      ...sourceOf(p.stackTrace?.callFrames?.[0]),
+      ts: Date.now(),
+    }));
+  } else if (method === "Runtime.exceptionThrown") {
+    const d = (params as { exceptionDetails: ExceptionDetails }).exceptionDetails;
+    const frames = d.stackTrace?.callFrames ?? [];
+    const entry: ConsoleEntry = {
+      type: "exception",
+      // V8's description ends with its own stack; that is dropped when the frames are listed below instead.
+      text: frames.length > 0 ? withoutStack(d.exception?.description ?? d.text) : d.exception?.description ?? d.text,
+      ...(frames.length > 0 ? sourceOf(frames[0]) : sourceOf({ url: d.url ?? "", lineNumber: d.lineNumber, columnNumber: d.columnNumber })),
+      ts: Date.now(),
+    };
+    if (frames.length > 0) {
+      entry.stack = frames.map((f) => `at ${f.functionName || "<anonymous>"} (${f.url}:${f.lineNumber + 1}:${f.columnNumber + 1})`).join("\n");
+    }
+    t.console.push(makeConsoleEntry(entry));
   } else if (method === "Page.frameNavigated") {
     const f = (params as { frame: { id: string; parentId?: string; url: string } }).frame;
     if (f.parentId !== undefined) return;

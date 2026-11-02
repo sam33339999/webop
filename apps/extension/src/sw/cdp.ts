@@ -57,6 +57,11 @@ export function setTabGuard(fn: (tabId: number) => boolean): void {
   mayControl = fn;
 }
 
+/** Whether a session still owns the tab (the guard above); false once its session has ended. */
+export function isControllable(tabId: number): boolean {
+  return mayControl(tabId);
+}
+
 function sessionClosed(): CdpError {
   return new CdpError("tab_not_in_session", "This tab is no longer controlled by the session (the session ended or the tab was closed).");
 }

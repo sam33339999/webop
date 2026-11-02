@@ -21,6 +21,15 @@ export class RingLog<T> {
   }
   all(): T[] { return this.items.slice(); }
   clear(): void { this.items = []; this.droppedCount = 0; }
+  /**
+   * Clears what a reader saw: removes exactly these entries (compared by identity, e.g. a snapshot from `all()`) and
+   * resets the dropped count. Entries pushed after the snapshot stay.
+   */
+  clearSeen(seen: readonly T[]): void {
+    const gone = new Set(seen);
+    this.items = this.items.filter((e) => !gone.has(e));
+    this.droppedCount = 0;
+  }
   get dropped(): number { return this.droppedCount; }
   /** Returns the newest entry matching pred (searches newest to oldest). */
   find(pred: (e: T) => boolean): T | undefined {
