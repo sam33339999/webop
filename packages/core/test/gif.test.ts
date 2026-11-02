@@ -83,6 +83,9 @@ test("stepCaption variants", () => {
   assert.equal(stepCaption({ kind: "double_click", point: [1, 2] }), "雙擊 (1, 2)");
   assert.equal(stepCaption({ kind: "hover", ref: "ref_3" }), "滑鼠移到 ref_3");
   assert.equal(stepCaption({ kind: "key", keys: "ctrl+a" }), "按鍵 ctrl+a");
+  assert.equal(stepCaption({ kind: "key", keys: "a".repeat(20) }), `按鍵 ${"a".repeat(20)}`);
+  assert.equal(stepCaption({ kind: "key", keys: "a".repeat(21) }), `按鍵 ${"a".repeat(20)}…`);
+  assert.equal(stepCaption({ kind: "key", keys: "😀".repeat(25) }), `按鍵 ${"😀".repeat(20)}…`);
   assert.equal(stepCaption({ kind: "scroll", direction: "down", amount: 3 }), "捲動 ↓ 3");
   assert.equal(stepCaption({ kind: "scroll", direction: "left", amount: 1 }), "捲動 ← 1");
   assert.equal(stepCaption({ kind: "scroll_to", ref: "ref_12" }), "捲動到 ref_12");

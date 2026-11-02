@@ -44,6 +44,14 @@ const withTarget = (label: string, s: { point?: Point; ref?: string }): string =
   return t ? `${label} ${t}` : label;
 };
 
+const CAPTION_KEYS_MAX = 20;
+
+/** The key combo as shown in a caption: at most 20 characters (never splitting one), then "…". */
+function captionKeys(keys: string): string {
+  const chars = Array.from(keys);
+  return chars.length > CAPTION_KEYS_MAX ? `${chars.slice(0, CAPTION_KEYS_MAX).join("")}…` : keys;
+}
+
 /** Caption for a step; never includes typed text (only its length). screenshot has none. */
 export function stepCaption(step: GifStep): string | null {
   switch (step.kind) {
@@ -62,7 +70,7 @@ export function stepCaption(step: GifStep): string | null {
     case "type":
       return `輸入 ${step.chars} 個字元`;
     case "key":
-      return `按鍵 ${step.keys}`;
+      return `按鍵 ${captionKeys(step.keys)}`;
     case "scroll":
       return `捲動 ${ARROWS[step.direction]} ${step.amount}`;
     case "scroll_to":
