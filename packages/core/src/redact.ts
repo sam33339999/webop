@@ -7,6 +7,11 @@ const SENSITIVE_PARTS = new Set([
 ]);
 const SENSITIVE_WHOLE = new Set(["apikey", "accesstoken", "idtoken", "sessionid", "authorization"]);
 
+const SENSITIVE_SUFFIXES = [
+  "token", "secret", "key", "password", "passwd", "pwd", "pass", "code", "sig", "signature",
+  "session", "sessionid", "jwt", "ticket", "otp",
+];
+
 function isSensitiveName(rawName: string): boolean {
   let name = rawName;
   try {
@@ -20,7 +25,11 @@ function isSensitiveName(rawName: string): boolean {
     .filter(Boolean)
     .map((p) => p.toLowerCase());
   if (parts.some((p) => SENSITIVE_PARTS.has(p))) return true;
-  return SENSITIVE_WHOLE.has(parts.join(""));
+  const joined = parts.join("");
+  if (SENSITIVE_WHOLE.has(joined)) return true;
+  // Catches concatenated lowercase names (secretkey, authtoken, passcode). Over-redaction such as
+  // "zipcode" or "monkey" is accepted; "keyword" does not end with a suffix and stays untouched.
+  return SENSITIVE_SUFFIXES.some((suffix) => joined.endsWith(suffix));
 }
 
 /** Redact values of sensitive params in a raw "a=b&c=d" string without re-encoding anything. */
@@ -35,14 +44,13 @@ function redactParams(raw: string): string {
     .join("&");
 }
 
-/** Mask credentials in a URL (userinfo, sensitive query/fragment values). Unparseable input is returned as-is. */
+/**
+ * Mask credentials in a URL (userinfo, sensitive query/fragment values). Works on the raw string so it
+ * fails closed: input that new URL() would reject still gets redacted. Input without "://" is returned as-is.
+ */
 export function redactUrl(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return url;
-  }
+  const schemeAt = url.indexOf("://");
+  if (schemeAt < 0) return url;
   let rest = url;
   let fragment = "";
   const hashAt = rest.indexOf("#");
@@ -56,8 +64,13 @@ export function redactUrl(url: string): string {
     query = "?" + redactParams(rest.slice(qAt + 1));
     rest = rest.slice(0, qAt);
   }
-  if (parsed.username || parsed.password) {
-    rest = rest.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, `$1${REDACTED}@`);
+  const authStart = schemeAt + 3;
+  const slashAt = rest.indexOf("/", authStart);
+  const authEnd = slashAt < 0 ? rest.length : slashAt;
+  const authority = rest.slice(authStart, authEnd);
+  const atAt = authority.lastIndexOf("@");
+  if (atAt >= 0) {
+    rest = rest.slice(0, authStart) + REDACTED + authority.slice(atAt) + rest.slice(authEnd);
   }
   return rest + query + fragment;
 }
