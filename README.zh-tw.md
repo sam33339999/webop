@@ -119,6 +119,7 @@ pnpm test:e2e    # 端到端測試：Playwright Chromium + 用完即丟的 profi
 - 實作計畫：[M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md)、[M4](docs/superpowers/plans/2026-10-31-webop-m4.md)、[M5](docs/superpowers/plans/2026-10-31-webop-m5.md)、[M6](docs/superpowers/plans/2026-11-01-webop-m6.md)
 - agent 接法：[docs/agents/](docs/agents/README.md)
 - 手動驗收紀錄：[docs/acceptance/](docs/acceptance/)（M4–M5 的結果在 [docs/agents/opencode.md](docs/agents/opencode.md)）
+- 0.7.0 的取捨與已知代價：[docs/0.7.0-tradeoffs.md](docs/0.7.0-tradeoffs.md)
 - 未來想做的功能：[docs/roadmap.md](docs/roadmap.md)
 
 ## v1 不包含

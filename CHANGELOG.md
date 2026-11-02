@@ -10,6 +10,8 @@
 
 ## 0.7.0 — 2026-11-02
 
+每項取捨與使用者會遇到的代價整理在 [docs/0.7.0-tradeoffs.md](docs/0.7.0-tradeoffs.md)。
+
 - 新增 `browser_read_network_requests`：agent 接手分頁後就開始記錄網路請求，每筆附本機時間（`HH:MM:SS.mmm`），只回傳網址、方法、資源類型，以及 HTTP 狀態、失敗原因或 pending，不含標頭與內容；網址裡的帳號密碼顯示為 `REDACTED`；跨網站導覽時清空緩衝（debugger 已脫離時分頁換到別的網站，讀取時也會清空）。分頁正在導向本 session 不能讀的網站時，讀取回 `permission_required`。不會附加 debugger 或送出任何 CDP 指令。需要 `read` 授權。
 - 新增 `browser_read_console_messages`：第一次呼叫才開始記錄 console。原因是 `Runtime.enable` 會被反爬蟲腳本偵測到，平常不啟用。實測 Chrome 啟用時會重播先前的訊息（`console replay: yes`），所以第一次讀取就看得到頁面載入時的訊息。建議帶 `pattern` 過濾（正規表示式，最多 200 字元，超過回 `invalid_pattern`）。每筆附本機時間。頁面有 JavaScript 對話框時啟用 console 會直接回報對話框，不會卡住；重新附加 debugger 時啟用 console／網路記錄的指令各有 2.5 秒上限，逾時就讓該記錄維持關閉，不會讓動作卡住；附加時頁面已經開著對話框（Chrome 不會再通知），`Page.enable` 沒回應就當作對話框開著處理，截圖改回「對話框開著」的結果（`captureVisibleTab` 也有 2 秒上限）。需要 `read` 授權。
 - 新增 `browser_gif_creator`（`start_recording`／`stop_recording`／`export`／`clear`）：最多 50 張畫面，畫上點擊標記與每一步的繁體中文說明；輸入的文字不會顯示。按鍵說明最多顯示 20 個字元。GIF 由 native host 存到 `~/Downloads/webop/`，檔名預設 `webop-<client>-<YYYYMMDD-HHMMSS>.gif`，可用選用參數 `filename` 指定（檔名上限 200 bytes、同名自動加 `-1`、`-2`）。`WEBOP_GIF_DIR` 是測試／進階用的覆寫，只有 Chrome 本身帶著這個環境變數啟動時才生效（從 Dock 開的 Chrome 不會繼承 shell 的環境變數），空字串視同未設定。錄影時 `navigate`／`tabs_create` 會額外拍一張畫面，但呼叫剩不到 10 秒時就略過。

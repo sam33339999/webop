@@ -119,6 +119,7 @@ Automated tests never touch your own browser profile. Headless Chromium keeps re
 - Implementation plans: [M1–M3](docs/superpowers/plans/2026-10-31-webop-m1-m3.md), [M4](docs/superpowers/plans/2026-10-31-webop-m4.md), [M5](docs/superpowers/plans/2026-10-31-webop-m5.md), [M6](docs/superpowers/plans/2026-11-01-webop-m6.md)
 - Agent guides: [docs/agents/](docs/agents/README.md)
 - Manual acceptance records: [docs/acceptance/](docs/acceptance/) (M4–M5 results are in [docs/agents/opencode.md](docs/agents/opencode.md))
+- 0.7.0 trade-offs and known costs (Traditional Chinese): [docs/0.7.0-tradeoffs.md](docs/0.7.0-tradeoffs.md)
 - Roadmap: [docs/roadmap.md](docs/roadmap.md)
 
 ## Not in v1
