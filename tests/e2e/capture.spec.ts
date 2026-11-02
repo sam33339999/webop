@@ -65,6 +65,41 @@ for (const dpr of [1, 2]) {
   });
 }
 
+// Page.captureScreenshot reads its clip in zoomed pixels; found on a real profile at 80% page zoom, where the
+// picture came out shrunk with blank (or tiled) margins and markers/coordinates no longer matched it.
+for (const [dpr, zoom] of [[1, 0.8], [2, 0.8], [1, 1.25]] as const) {
+  test(`screenshot frame matches the page at dpr ${dpr} with page zoom ${zoom}`, async () => {
+    const { sw, baseUrl, context } = await open({ deviceScaleFactor: dpr });
+    const tab_id = await openTab(sw, `${baseUrl}/zoom-target.html`);
+    await sw.evaluate(([id, z]) => chrome.tabs.setZoom(id, z), [tab_id, zoom] as const);
+    const img = imageOf(await call(sw, "computer", { action: "screenshot", tab_id }));
+    const { width, height } = jpegSize(Buffer.from(img.data, "base64"));
+    const ctx: ScreenshotContext | undefined = await sw.evaluate((id) => (globalThis as any).__webop.getContext(id), tab_id);
+    assert.ok(ctx, "context stored");
+    assert.deepEqual([width, height], [ctx.screenshotWidth, ctx.screenshotHeight]);
+    const page = context.pages().find((p) => p.url().includes("zoom-target.html"));
+    assert.ok(page);
+    const rect = await page.evaluate(() => { const r = document.getElementById("t")!.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, iw: innerWidth }; });
+    assert.equal(rect.iw, ctx.viewportWidth, "context viewport is in the page's CSS px");
+    // Sample the picture where the frame says the red square's centre and a point just outside it are.
+    const at = (x: number, y: number) => [Math.round(x * ctx.screenshotWidth / ctx.viewportWidth), Math.round(y * ctx.screenshotHeight / ctx.viewportHeight)];
+    const inside = at(rect.x + rect.w / 2, rect.y + rect.h / 2);
+    const outside = at(rect.x + rect.w * 1.4, rect.y + rect.h / 2);
+    const decoder = await context.newPage();
+    const px = await decoder.evaluate(async ([src, pts]) => {
+      const bmp = await createImageBitmap(await (await fetch(src)).blob());
+      const c = new OffscreenCanvas(bmp.width, bmp.height);
+      const g = c.getContext("2d")!;
+      g.drawImage(bmp, 0, 0);
+      return pts.map(([x, y]) => Array.from(g.getImageData(x, y, 1, 1).data.slice(0, 3)));
+    }, [`data:image/jpeg;base64,${img.data}`, [inside, outside]] as const);
+    await decoder.close();
+    const red = ([r, g, b]: number[]) => r > 200 && g < 60 && b < 60;
+    assert.ok(red(px[0]), `centre of the square should be red, got ${px[0]}`);
+    assert.ok(!red(px[1]), `beside the square should not be red, got ${px[1]}`);
+  });
+}
+
 test("chrome:// is denied by the allowlist before CDP is touched", async () => {
   const { sw } = await open();
   const tab_id = await openTab(sw, "chrome://version");

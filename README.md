@@ -10,7 +10,7 @@ It is a Manifest V3 browser extension plus a small `webop` command-line program.
 agent ⇄ webop mcp (stdio MCP) ⇄ per-profile Unix socket ⇄ webop native-host (Native Messaging) ⇄ extension ⇄ your tabs
 ```
 
-Current version: **0.7.0** (milestones M1–M6 done and manually accepted). macOS only for now.
+Current version: **0.7.1** (milestones M1–M6 done and manually accepted). macOS only for now.
 
 ## What the agent gets
 
@@ -54,7 +54,7 @@ fnm use 26
 pnpm install
 pnpm -r build
 pnpm build:sea                         # builds the single executable apps/webop/dist/webop
-apps/webop/dist/webop --version        # webop 0.7.0
+apps/webop/dist/webop --version        # webop 0.7.1
 ```
 
 Register the Native Messaging host **before** loading the extension:

@@ -10,7 +10,7 @@
 agent ⇄ webop mcp（stdio MCP）⇄ 每個 profile 一個 Unix socket ⇄ webop native-host（Native Messaging）⇄ 擴充功能 ⇄ 你的分頁
 ```
 
-目前版本：**0.7.0**（M1–M6 里程碑已完成並手動驗收）。目前只支援 macOS。
+目前版本：**0.7.1**（M1–M6 里程碑已完成並手動驗收）。目前只支援 macOS。
 
 ## agent 可以用的工具
 
@@ -54,7 +54,7 @@ fnm use 26
 pnpm install
 pnpm -r build
 pnpm build:sea                         # 產生單一執行檔 apps/webop/dist/webop
-apps/webop/dist/webop --version        # webop 0.7.0
+apps/webop/dist/webop --version        # webop 0.7.1
 ```
 
 **先**註冊 Native Messaging host，**再**載入擴充功能：

@@ -8,7 +8,7 @@ const JPEG_QUALITY = 75;
 const OVERLAY_SETTLE_MS = 50;
 /** captureVisibleTab can itself stall on a page blocked by a dialog (seen right after re-attaching to it). */
 const DIALOG_CAPTURE_MS = 2000;
-/** After a fresh debugger attach the infobar resizes the page; wait until innerWidth/innerHeight stay put. */
+/** After a fresh debugger attach the infobar resizes the page; wait until innerWidth/innerHeight and the scale stay put. */
 const VIEWPORT_POLL_MS = 50;
 const VIEWPORT_STABLE_MS = 200;
 const VIEWPORT_SETTLE_MAX_MS = 1500;
@@ -54,15 +54,27 @@ interface PageProbe {
   scrollX: number;
   scrollY: number;
   visibility: string;
+  zoom: number;
 }
 
+/**
+ * `zoom` is the tab's page zoom. Page.captureScreenshot reads its clip in zoomed pixels (CSS px × zoom), not the CSS
+ * px innerWidth/scrollX are in; at 80% zoom an unscaled clip covers 1.25× the viewport (blank or tiled margins).
+ */
 async function probe(tabId: number): Promise<PageProbe> {
-  const r = await send<{ result: { value: PageProbe } }>(tabId, "Runtime.evaluate", {
-    expression: `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1, scrollX, scrollY, visibility: document.visibilityState })`,
-    returnByValue: true,
-  });
-  return r.result.value;
+  const [r, zoom] = await Promise.all([
+    send<{ result: { value: Omit<PageProbe, "zoom"> } }>(tabId, "Runtime.evaluate", {
+      expression: `({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1, scrollX, scrollY, visibility: document.visibilityState })`,
+      returnByValue: true,
+    }),
+    chrome.tabs.getZoom(tabId).catch(() => 1),
+  ]);
+  return { ...r.result.value, zoom: zoom > 0 ? zoom : 1 };
 }
+
+/** A capture clip for a rectangle given in CSS px (see probe). */
+const zoomedClip = (p: PageProbe, x: number, y: number, width: number, height: number, scale: number) =>
+  ({ x: x * p.zoom, y: y * p.zoom, width: width * p.zoom, height: height * p.zoom, scale });
 
 async function waitForStableViewport(tabId: number): Promise<void> {
   const start = Date.now();
@@ -71,7 +83,7 @@ async function waitForStableViewport(tabId: number): Promise<void> {
   for (;;) {
     const p = await probe(tabId);
     const now = Date.now();
-    const size = `${p.width}x${p.height}`;
+    const size = `${p.width}x${p.height}@${p.dpr}`;
     if (size !== last) { last = size; since = now; }
     if (now - since >= VIEWPORT_STABLE_MS || now - start >= VIEWPORT_SETTLE_MAX_MS) return;
     await new Promise((resolve) => setTimeout(resolve, VIEWPORT_POLL_MS));
@@ -104,7 +116,7 @@ async function wake(tabId: number, p?: PageProbe): Promise<void> {
     await send(tabId, "Page.captureScreenshot", {
       format: "jpeg",
       quality: 1,
-      clip: { x: probed.scrollX, y: probed.scrollY, width: 1, height: 1, scale: 1 },
+      clip: zoomedClip(probed, probed.scrollX, probed.scrollY, 1, 1, 1),
     });
   }
 }
@@ -116,15 +128,23 @@ export async function prepareForInput(tabId: number): Promise<void> {
 }
 
 async function fullScreenshot(tabId: number, opts: { store?: boolean; budget?: Budget }): Promise<{ block: ContentBlock; ctx: ScreenshotContext }> {
-  if (takeFreshAttach(tabId)) await waitForStableViewport(tabId);
+  // Wake first: a background tab that has never rendered reports a stale size and scale (seen on a two-display Mac:
+  // dpr 2 while hidden, 0.8 once rendered), so measuring before it renders yields a garbled capture.
+  if (takeFreshAttach(tabId)) {
+    await wake(tabId);
+    await waitForStableViewport(tabId);
+  }
   await send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
   if (__DEV__) hiderLog.push({ tabId, hidden: true });
   await hideOverlay(tabId, true);
   try {
     await new Promise((resolve) => setTimeout(resolve, OVERLAY_SETTLE_MS));
-    const p = await probe(tabId);
-    // A hidden tab produces no frames until the browser is forced to render one.
-    await wake(tabId, p);
+    let p = await probe(tabId);
+    // A hidden tab produces no frames until the browser is forced to render one; measure again once it has.
+    if (p.visibility !== "visible") {
+      await wake(tabId, p);
+      p = await probe(tabId);
+    }
     const { clipScale, outWidth, outHeight } = planCapture(p.width, p.height, p.dpr, opts.budget ?? DEFAULT_BUDGET);
     if (__DEV__) hiderLog.push({ tabId, at: "before" });
     const { data } = await send<{ data: string }>(tabId, "Page.captureScreenshot", {
@@ -132,7 +152,7 @@ async function fullScreenshot(tabId: number, opts: { store?: boolean; budget?: B
       quality: JPEG_QUALITY,
       fromSurface: true,
       captureBeyondViewport: false,
-      clip: { x: p.scrollX, y: p.scrollY, width: p.width, height: p.height, scale: clipScale },
+      clip: zoomedClip(p, p.scrollX, p.scrollY, p.width, p.height, clipScale),
     });
     if (__DEV__) hiderLog.push({ tabId, at: "after" });
     const ctx: ScreenshotContext = {
@@ -208,7 +228,7 @@ export async function zoom(tabId: number, region: [number, number, number, numbe
       quality: JPEG_QUALITY,
       fromSurface: true,
       captureBeyondViewport: false,
-      clip: { x: p.scrollX + left, y: p.scrollY + top, width, height, scale: clipScale },
+      clip: zoomedClip(p, p.scrollX + left, p.scrollY + top, width, height, clipScale),
     });
     return { block: { type: "image", data, mimeType: "image/jpeg" }, width: outWidth, height: outHeight };
   } finally {
