@@ -17,6 +17,8 @@ export function levelFor(tool: string, action?: string): Level | null {
     case "tabs_create":
     case "read_page":
     case "get_page_text":
+    case "read_console_messages":
+    case "read_network_requests":
       return "read";
     case "computer":
       return action === "screenshot" || action === "zoom" ? "read" : "act";
@@ -24,6 +26,7 @@ export function levelFor(tool: string, action?: string): Level | null {
       return "act";
     case "tabs_list":
     case "tabs_close":
+    case "gif_creator":
       return null;
     default:
       throw new Error(`Unknown tool: ${tool}`);

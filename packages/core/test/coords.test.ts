@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toViewport } from "../src/coords.ts";
+import { fromViewport, toViewport } from "../src/coords.ts";
 
 const ctx = { viewportWidth: 1280, viewportHeight: 800, screenshotWidth: 1280, screenshotHeight: 800 };
 test("identity at scale 1", () => assert.deepEqual(toViewport(640, 400, ctx), { viewport: [640, 400] }));
@@ -16,4 +16,11 @@ test("oob message names frame and full-resolution", () => {
   const r = toViewport(9999, 0, half) as { oobError: string };
   assert.match(r.oobError, /640x400/);
   assert.match(r.oobError, /full-resolution/);
+});
+test("fromViewport scales into the screenshot frame", () => assert.deepEqual(fromViewport(640, 400, half), [320, 200]));
+test("fromViewport round-trips with toViewport", () => {
+  const r = toViewport(123, 77, half);
+  assert.ok("viewport" in r);
+  const [bx, by] = fromViewport(r.viewport[0], r.viewport[1], half);
+  assert.ok(Math.abs(bx - 123) <= 1 && Math.abs(by - 77) <= 1);
 });

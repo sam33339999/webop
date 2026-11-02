@@ -62,3 +62,9 @@ test("deny beats once; prototype-named sites do not throw", () => {
   assert.equal(decide(policy(), "constructor", "act"), "ask");
   assert.equal(decide(policy({ deny: ["__proto__"] }), "__proto__", "read"), "deny");
 });
+
+test("levelFor covers log reading and gif tools", () => {
+  assert.equal(levelFor("read_console_messages"), "read");
+  assert.equal(levelFor("read_network_requests"), "read");
+  assert.equal(levelFor("gif_creator"), null);
+});

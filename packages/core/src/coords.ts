@@ -25,3 +25,12 @@ export function toViewport(
     ],
   };
 }
+
+/** Inverse of toViewport: viewport pixels → screenshot-frame pixels. */
+export function fromViewport(x: number, y: number, ctx: ScreenshotContext): [number, number] {
+  const { viewportWidth, viewportHeight, screenshotWidth, screenshotHeight } = ctx;
+  return [
+    Math.round((x * screenshotWidth) / viewportWidth),
+    Math.round((y * screenshotHeight) / viewportHeight),
+  ];
+}
